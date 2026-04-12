@@ -1,6 +1,6 @@
 # log-it
 
-A structured, leveled JSON logger for Go. Pure stdlib, zero dependencies, 138 tests.
+A structured, leveled JSON logger for Go. Pure stdlib, zero dependencie.
 
 ```go
 import logger "github.com/adamjohannes/log-it"
