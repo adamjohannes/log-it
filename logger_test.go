@@ -402,6 +402,110 @@ func noopExit(code *int) func(int) {
 	return func(c int) { *code = c }
 }
 
+// --- TRACE level tests ---
+
+func TestTraceLevel(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, TRACE)
+	l.Trace("trace-msg", map[string]any{"k": "v"})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "TRACE" {
+		t.Errorf("expected level=TRACE, got %v", entry["level"])
+	}
+	if entry["k"] != "v" {
+		t.Errorf("expected k=v, got %v", entry["k"])
+	}
+}
+
+func TestTraceFilteredByDebug(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Trace("should-drop", nil)
+
+	if buf.Len() != 0 {
+		t.Error("expected TRACE to be dropped when minLevel is DEBUG")
+	}
+}
+
+func TestTraceLevelString(t *testing.T) {
+	if TRACE.String() != "TRACE" {
+		t.Errorf("expected TRACE, got %s", TRACE.String())
+	}
+}
+
+// --- Full caller path tests ---
+
+func TestDefaultCallerIsBasename(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Info("test", nil)
+	})
+	file, _ := entry["file"].(string)
+	if strings.Contains(file, "/") {
+		t.Errorf("expected basename only, got %v", file)
+	}
+}
+
+func TestFullCallerPathIncludesDirectory(t *testing.T) {
+	entry := captureLogWithOpts(
+		[]Option{WithFullCallerPath()},
+		func(l *Logger) {
+			l.Info("test", nil)
+		},
+	)
+	file, _ := entry["file"].(string)
+	if !strings.Contains(file, "/") {
+		t.Errorf("expected full path with /, got %v", file)
+	}
+	if !strings.Contains(file, "logger_test.go") {
+		t.Errorf("expected logger_test.go in path, got %v", file)
+	}
+}
+
+// --- Event ID tests ---
+
+func TestEventIDPresent(t *testing.T) {
+	entry := captureLogWithOpts(
+		[]Option{WithEventID()},
+		func(l *Logger) {
+			l.Info("with-id", nil)
+		},
+	)
+	eid, ok := entry["event_id"].(string)
+	if !ok || eid == "" {
+		t.Errorf("expected non-empty event_id, got %v", entry["event_id"])
+	}
+}
+
+func TestEventIDNotPresentByDefault(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Info("no-id", nil)
+	})
+	if _, exists := entry["event_id"]; exists {
+		t.Error("expected no event_id without WithEventID")
+	}
+}
+
+func TestEventIDsAreUnique(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithEventID())
+	l.Info("a", nil)
+	l.Info("b", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+	id1, _ := entries[0]["event_id"].(string)
+	id2, _ := entries[1]["event_id"].(string)
+	if id1 == id2 {
+		t.Errorf("expected unique event_ids, both are %q", id1)
+	}
+}
+
 // --- Level filtering & SetLevel/GetLevel tests ---
 
 func TestLevelFiltering(t *testing.T) {
@@ -831,6 +935,20 @@ func TestJsonMarshalFailure(t *testing.T) {
 	msg, _ := entry["message"].(string)
 	if !strings.Contains(msg, "failed to marshal log entry to json") {
 		t.Errorf("expected English fallback message, got %v", msg)
+	}
+}
+
+func TestJsonMarshalFallbackNoInjection(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	// func() triggers marshal failure; the error message from json.Marshal
+	// may contain quotes. Verify the fallback is still valid JSON.
+	l.Info("inject-test", map[string]any{"fn": func() {}})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("fallback JSON is invalid (possible injection): %v\nraw: %s", err, buf.String())
 	}
 }
 

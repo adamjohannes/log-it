@@ -110,7 +110,7 @@ func TestDefaultFormatterIsJSON(t *testing.T) {
 }
 
 func TestColorizeAllLevels(t *testing.T) {
-	levels := []string{"DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "UNKNOWN"}
+	levels := []string{"TRACE", "DEBUG", "INFO", "WARNING", "ERROR", "FATAL", "UNKNOWN"}
 	for _, lvl := range levels {
 		result := colorize(lvl)
 		if lvl == "UNKNOWN" {

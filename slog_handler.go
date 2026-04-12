@@ -90,8 +90,11 @@ func (h *SlogHandler) prefixKey(key string) string {
 }
 
 // slogLevelToLevel maps slog levels to our Level type.
+// slog.LevelDebug (-4) maps to DEBUG. Custom levels below that map to TRACE.
 func slogLevelToLevel(l slog.Level) Level {
 	switch {
+	case l < slog.LevelDebug:
+		return TRACE
 	case l < slog.LevelInfo:
 		return DEBUG
 	case l < slog.LevelWarn:

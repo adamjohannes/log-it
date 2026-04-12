@@ -20,7 +20,7 @@ type Sampler interface {
 // 11th, etc. entry at each level.
 type EveryNSampler struct {
 	n      int64
-	counts [5]atomic.Int64 // one counter per level (DEBUG..FATAL)
+	counts [6]atomic.Int64 // one counter per level (TRACE..FATAL)
 }
 
 // NewEveryNSampler creates a sampler that passes every nth entry per level.
@@ -45,7 +45,7 @@ func (s *EveryNSampler) Sample(level Level, _ string) bool {
 // next second window.
 type RateSampler struct {
 	perSecond int
-	buckets   [5]rateBucket // one per level
+	buckets   [6]rateBucket // one per level
 }
 
 type rateBucket struct {

@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -16,7 +17,8 @@ import (
 type Level int
 
 const (
-	DEBUG Level = iota
+	TRACE Level = iota
+	DEBUG
 	INFO
 	WARNING
 	ERROR
@@ -25,6 +27,8 @@ const (
 
 func (l Level) String() string {
 	switch l {
+	case TRACE:
+		return "TRACE"
 	case DEBUG:
 		return "DEBUG"
 	case INFO:
@@ -58,9 +62,11 @@ type Logger struct {
 	identity   *serviceIdentity
 	closed     atomic.Bool
 	exitFunc   func(code int)
-	hooks      []Hook
-	formatter  Formatter
-	sampler    Sampler
+	hooks          []Hook
+	formatter      Formatter
+	sampler        Sampler
+	fullCallerPath bool
+	eventID        bool
 }
 
 // New creates a root Logger that writes to out and discards
@@ -147,6 +153,17 @@ func (l *Logger) WithContextExtractor(fn ContextExtractor) *Logger {
 var reservedKeys = map[string]struct{}{
 	"time": {}, "level": {}, "message": {}, "file": {},
 	"service": {}, "version": {}, "env": {}, "host": {},
+	"event_id": {},
+}
+
+// eventCounter provides unique sequence numbers for event IDs.
+var eventCounter atomic.Uint64
+
+// generateEventID creates a lightweight unique ID from timestamp + counter.
+func generateEventID() string {
+	ts := time.Now().UnixNano()
+	seq := eventCounter.Add(1)
+	return fmt.Sprintf("%x-%x", ts, seq)
 }
 
 // mergeFields combines two field maps. Overlay keys take precedence.
@@ -229,8 +246,10 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		file = "???"
 		line = 0
 	} else {
-		if slash := strings.LastIndex(file, "/"); slash >= 0 {
-			file = file[slash+1:]
+		if !r.fullCallerPath {
+			if slash := strings.LastIndex(file, "/"); slash >= 0 {
+				file = file[slash+1:]
+			}
 		}
 	}
 
@@ -247,6 +266,10 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		entry["host"] = id.Host
 	}
 
+	if r.eventID {
+		entry["event_id"] = generateEventID()
+	}
+
 	fields = enrichErrors(fields)
 
 	for k, v := range fields {
@@ -259,11 +282,12 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 
 	data, err := r.formatter.Format(entry)
 	if err != nil {
-		data = []byte(fmt.Sprintf(
-			`{"time":"%s","level":"ERROR","message":"failed to marshal log entry to json: %v"}`,
-			time.Now().UTC().Format(time.RFC3339Nano),
-			err,
-		))
+		fallback := map[string]string{
+			"time":    time.Now().UTC().Format(time.RFC3339Nano),
+			"level":   "ERROR",
+			"message": "failed to marshal log entry to json: " + err.Error(),
+		}
+		data, _ = json.Marshal(fallback)
 	}
 
 	r.mu.Lock()
@@ -288,6 +312,7 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 
 // --- Structured log methods ---
 
+func (l *Logger) Trace(message string, fields map[string]any)   { l.internalLog(TRACE, message, fields) }
 func (l *Logger) Debug(message string, fields map[string]any)   { l.internalLog(DEBUG, message, fields) }
 func (l *Logger) Info(message string, fields map[string]any)    { l.internalLog(INFO, message, fields) }
 func (l *Logger) Warning(message string, fields map[string]any) { l.internalLog(WARNING, message, fields) }
@@ -296,6 +321,7 @@ func (l *Logger) Fatal(message string, fields map[string]any)   { l.internalLog(
 
 // --- Formatted log methods ---
 
+func (l *Logger) Tracef(format string, v ...any)   { l.internalLog(TRACE, fmt.Sprintf(format, v...), nil) }
 func (l *Logger) Debugf(format string, v ...any)   { l.internalLog(DEBUG, fmt.Sprintf(format, v...), nil) }
 func (l *Logger) Infof(format string, v ...any)    { l.internalLog(INFO, fmt.Sprintf(format, v...), nil) }
 func (l *Logger) Warningf(format string, v ...any) { l.internalLog(WARNING, fmt.Sprintf(format, v...), nil) }
@@ -304,6 +330,7 @@ func (l *Logger) Fatalf(format string, v ...any)   { l.internalLog(FATAL, fmt.Sp
 
 // --- Context-aware log methods ---
 
+func (l *Logger) TraceContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, TRACE, message, fields) }
 func (l *Logger) DebugContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, DEBUG, message, fields) }
 func (l *Logger) InfoContext(ctx context.Context, message string, fields map[string]any)    { l.internalLogCtx(ctx, INFO, message, fields) }
 func (l *Logger) WarningContext(ctx context.Context, message string, fields map[string]any) { l.internalLogCtx(ctx, WARNING, message, fields) }
@@ -312,6 +339,7 @@ func (l *Logger) FatalContext(ctx context.Context, message string, fields map[st
 
 // --- Typed field log methods (zero-allocation constructors) ---
 
+func (l *Logger) Tracew(message string, fields ...Field)   { l.internalLog(TRACE, message, fieldsToMap(fields)) }
 func (l *Logger) Debugw(message string, fields ...Field)   { l.internalLog(DEBUG, message, fieldsToMap(fields)) }
 func (l *Logger) Infow(message string, fields ...Field)    { l.internalLog(INFO, message, fieldsToMap(fields)) }
 func (l *Logger) Warningw(message string, fields ...Field) { l.internalLog(WARNING, message, fieldsToMap(fields)) }

@@ -69,6 +69,8 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 // colorize wraps a level string with ANSI color codes.
 func colorize(level string) string {
 	switch level {
+	case "TRACE":
+		return "\033[90m" + level + "\033[0m" // gray
 	case "DEBUG":
 		return "\033[36m" + level + "\033[0m" // cyan
 	case "INFO":

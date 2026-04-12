@@ -63,3 +63,15 @@ func WithFormatter(f Formatter) Option {
 func WithSampler(s Sampler) Option {
 	return func(l *Logger) { l.sampler = s }
 }
+
+// WithFullCallerPath includes the full file path (including package
+// directory) in the "file" field instead of just the basename.
+func WithFullCallerPath() Option {
+	return func(l *Logger) { l.fullCallerPath = true }
+}
+
+// WithEventID enables automatic generation of a unique event_id
+// for every log entry, useful for deduplication in log pipelines.
+func WithEventID() Option {
+	return func(l *Logger) { l.eventID = true }
+}
