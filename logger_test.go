@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -26,23 +28,6 @@ func captureLogWithOpts(opts []Option, fn func(l *Logger)) map[string]any {
 		panic("captureLog: invalid JSON: " + err.Error())
 	}
 	return entry
-}
-
-// captureLogAll runs fn and returns all log entries.
-func captureLogAll(fn func(l *Logger)) []map[string]any {
-	var buf bytes.Buffer
-	l := New(&buf, DEBUG)
-	fn(l)
-	var entries []map[string]any
-	dec := json.NewDecoder(&buf)
-	for dec.More() {
-		var entry map[string]any
-		if err := dec.Decode(&entry); err != nil {
-			panic("captureLogAll: invalid JSON: " + err.Error())
-		}
-		entries = append(entries, entry)
-	}
-	return entries
 }
 
 // --- Flatten tests ---
@@ -656,16 +641,16 @@ func TestFatalWritesBeforeExiting(t *testing.T) {
 // --- Formatted methods ---
 
 func TestAllFormattedLevels(t *testing.T) {
-	type logFunc func(*Logger, string, ...interface{})
+	type logFunc func(*Logger, string, ...any)
 	tests := []struct {
 		name  string
 		fn    logFunc
 		level string
 	}{
-		{"Debugf", func(l *Logger, f string, v ...interface{}) { l.Debugf(f, v...) }, "DEBUG"},
-		{"Infof", func(l *Logger, f string, v ...interface{}) { l.Infof(f, v...) }, "INFO"},
-		{"Warningf", func(l *Logger, f string, v ...interface{}) { l.Warningf(f, v...) }, "WARNING"},
-		{"Errorf", func(l *Logger, f string, v ...interface{}) { l.Errorf(f, v...) }, "ERROR"},
+		{"Debugf", func(l *Logger, f string, v ...any) { l.Debugf(f, v...) }, "DEBUG"},
+		{"Infof", func(l *Logger, f string, v ...any) { l.Infof(f, v...) }, "INFO"},
+		{"Warningf", func(l *Logger, f string, v ...any) { l.Warningf(f, v...) }, "WARNING"},
+		{"Errorf", func(l *Logger, f string, v ...any) { l.Errorf(f, v...) }, "ERROR"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1114,5 +1099,447 @@ func TestWithNilFields(t *testing.T) {
 
 	if entry["message"] != "nil-fields" {
 		t.Errorf("expected message=nil-fields, got %v", entry["message"])
+	}
+}
+
+// --- Extractor panic recovery ---
+
+func TestExtractorPanicDoesNotCrash(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+		panic("extractor boom")
+	}).WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"safe": true}
+	})
+
+	child.InfoContext(context.Background(), "survived", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["message"] != "survived" {
+		t.Errorf("expected message=survived, got %v", entry["message"])
+	}
+	if entry["safe"] != true {
+		t.Errorf("expected safe=true from second extractor, got %v", entry["safe"])
+	}
+}
+
+// --- TRACE method variants ---
+
+func TestTracef(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, TRACE)
+	l.Tracef("trace %d", 42)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "TRACE" {
+		t.Errorf("expected level=TRACE, got %v", entry["level"])
+	}
+	if entry["message"] != "trace 42" {
+		t.Errorf("expected interpolated message, got %v", entry["message"])
+	}
+}
+
+func TestTracew(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, TRACE)
+	l.Tracew("typed-trace", String("k", "v"))
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "TRACE" {
+		t.Errorf("expected level=TRACE, got %v", entry["level"])
+	}
+	if entry["k"] != "v" {
+		t.Errorf("expected k=v, got %v", entry["k"])
+	}
+}
+
+func TestTraceContext(t *testing.T) {
+	type ctxKey string
+	var buf bytes.Buffer
+	l := New(&buf, TRACE)
+	child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+		if v := ctx.Value(ctxKey("tid")); v != nil {
+			return map[string]any{"trace_id": v}
+		}
+		return nil
+	})
+
+	ctx := context.WithValue(context.Background(), ctxKey("tid"), "t-1")
+	child.TraceContext(ctx, "ctx-trace", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "TRACE" {
+		t.Errorf("expected level=TRACE, got %v", entry["level"])
+	}
+	if entry["trace_id"] != "t-1" {
+		t.Errorf("expected trace_id=t-1, got %v", entry["trace_id"])
+	}
+}
+
+// --- Hooks with formatted/typed/context methods ---
+
+func TestHooksCalledWithFormattedMethods(t *testing.T) {
+	var called bool
+	hook := func(level Level, msg string, _ map[string]any) {
+		called = true
+		if level != INFO || msg != "hello world" {
+			panic("unexpected hook args")
+		}
+	}
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithHooks(hook))
+	l.Infof("hello %s", "world")
+
+	if !called {
+		t.Error("expected hook to be called with Infof")
+	}
+}
+
+func TestHooksCalledWithTypedMethods(t *testing.T) {
+	var gotFields map[string]any
+	hook := func(_ Level, _ string, fields map[string]any) {
+		gotFields = fields
+	}
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithHooks(hook))
+	l.Infow("typed", String("k", "v"))
+
+	if gotFields["k"] != "v" {
+		t.Errorf("expected hook to receive typed field k=v, got %v", gotFields["k"])
+	}
+}
+
+func TestHooksCalledWithContextMethods(t *testing.T) {
+	var called bool
+	hook := func(_ Level, _ string, _ map[string]any) { called = true }
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithHooks(hook))
+	l.InfoContext(context.Background(), "ctx", nil)
+
+	if !called {
+		t.Error("expected hook to be called with InfoContext")
+	}
+}
+
+// --- Sampler with formatted/typed methods ---
+
+func TestSamplerWithFormattedMethods(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithSampler(NewEveryNSampler(5)))
+
+	for i := 0; i < 10; i++ {
+		l.Infof("msg %d", i)
+	}
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 2 {
+		t.Errorf("expected 2 sampled entries from Infof, got %d", len(entries))
+	}
+}
+
+func TestSamplerWithTypedMethods(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithSampler(NewEveryNSampler(5)))
+
+	for i := 0; i < 10; i++ {
+		l.Infow("msg", Int("i", i))
+	}
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 2 {
+		t.Errorf("expected 2 sampled entries from Infow, got %d", len(entries))
+	}
+}
+
+// --- Error enrichment through *w methods ---
+
+func TestErrorEnrichmentWithTypedFields(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	err := errors.New("connection refused")
+	l.Errorw("failed", Err(err))
+
+	var entry map[string]any
+	if e := json.Unmarshal(buf.Bytes(), &entry); e != nil {
+		t.Fatal(e)
+	}
+	if entry["error"] != "connection refused" {
+		t.Errorf("expected error string, got %v", entry["error"])
+	}
+	if entry["error_type"] != "*errors.errorString" {
+		t.Errorf("expected error_type, got %v", entry["error_type"])
+	}
+}
+
+// --- Slog handler + hooks ---
+
+func TestSlogHandlerTriggersHooks(t *testing.T) {
+	var hookCalled bool
+	var hookLevel Level
+	hook := func(level Level, _ string, _ map[string]any) {
+		hookCalled = true
+		hookLevel = level
+	}
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithHooks(hook))
+	sl := slog.New(NewSlogHandler(l))
+	sl.Warn("slog-warn")
+
+	if !hookCalled {
+		t.Error("expected hook to be called from slog entry")
+	}
+	if hookLevel != WARNING {
+		t.Errorf("expected hook level=WARNING, got %v", hookLevel)
+	}
+}
+
+// --- Slog handler after close ---
+
+func TestSlogHandlerAfterClose(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	sl := slog.New(NewSlogHandler(l))
+
+	sl.Info("before")
+	_ = l.Sync()
+	before := buf.Len()
+
+	sl.Info("after")
+	if buf.Len() != before {
+		t.Error("expected slog entry after Sync to be dropped")
+	}
+}
+
+// --- Timing after Sync ---
+
+func TestTimedAfterSync(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	done := l.Timed("op")
+	_ = l.Sync()
+	before := buf.Len()
+
+	done() // should be silently dropped
+	if buf.Len() != before {
+		t.Error("expected Timed done() after Sync to be dropped")
+	}
+}
+
+// --- Full caller path with child logger ---
+
+func TestFullCallerPathWithChild(t *testing.T) {
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG, WithFullCallerPath())
+	child := root.With(map[string]any{"component": "handler"})
+	child.Info("child-full-path", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	file, _ := entry["file"].(string)
+	if !strings.Contains(file, "/") {
+		t.Errorf("expected full path on child, got %v", file)
+	}
+}
+
+// --- TextFormatter with error-enriched fields ---
+
+func TestTextFormatterWithErrorEnrichment(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+
+	err := errors.New("timeout")
+	l.Error("failed", map[string]any{"err": err})
+
+	line := buf.String()
+	if !strings.Contains(line, "err=timeout") {
+		t.Errorf("expected err=timeout in text output: %s", line)
+	}
+	if !strings.Contains(line, "err_type=") {
+		t.Errorf("expected err_type in text output: %s", line)
+	}
+}
+
+// --- Event ID format and concurrent uniqueness ---
+
+func TestEventIDFormat(t *testing.T) {
+	entry := captureLogWithOpts(
+		[]Option{WithEventID()},
+		func(l *Logger) {
+			l.Info("id-format", nil)
+		},
+	)
+	eid, _ := entry["event_id"].(string)
+	if !strings.Contains(eid, "-") {
+		t.Errorf("expected hex-hex format, got %q", eid)
+	}
+}
+
+func TestEventIDConcurrentUniqueness(t *testing.T) {
+	var buf bytes.Buffer
+	aw := NewAsyncWriter(&buf, 8192)
+	l := New(aw, DEBUG, WithEventID())
+
+	var wg sync.WaitGroup
+	for g := 0; g < 10; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 10; i++ {
+				l.Info("concurrent", nil)
+			}
+		}()
+	}
+	wg.Wait()
+	_ = l.Sync()
+
+	entries := decodeAllEntries(t, &buf)
+	ids := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		eid, _ := e["event_id"].(string)
+		if eid == "" {
+			t.Fatal("missing event_id in concurrent entry")
+		}
+		if ids[eid] {
+			t.Errorf("duplicate event_id: %s", eid)
+		}
+		ids[eid] = true
+	}
+}
+
+// --- Formatter inherited by child ---
+
+func TestFormatterInheritedByChild(t *testing.T) {
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	child := root.With(map[string]any{"child": true})
+	child.Info("from-child", nil)
+
+	// Should be text, not JSON
+	if buf.Bytes()[0] == '{' {
+		t.Error("expected text format from child, got JSON")
+	}
+	if !strings.Contains(buf.String(), "from-child") {
+		t.Error("expected message in text output")
+	}
+}
+
+// --- Max feature composition ---
+
+func TestMaxFeatureComposition(t *testing.T) {
+	var buf bytes.Buffer
+	var hookLevel Level
+	var hookCalled bool
+	hook := func(level Level, _ string, _ map[string]any) {
+		hookCalled = true
+		hookLevel = level
+	}
+
+	aw := NewAsyncWriter(&buf, 4096)
+	l := New(aw, TRACE,
+		WithServiceIdentity("myapp", "3.0.0", "prod"),
+		WithEventID(),
+		WithFullCallerPath(),
+		WithHooks(hook),
+		WithSampler(NewEveryNSampler(1)), // pass all
+	)
+
+	child := l.With(map[string]any{"component": "api"})
+	child = child.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"request_id": "req-42"}
+	})
+
+	child.ErrorContext(context.Background(), "all-features", map[string]any{
+		"err":    errors.New("db timeout"),
+		"status": 500,
+	})
+
+	_ = l.Sync()
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	e := entries[0]
+
+	// Core keys
+	if e["level"] != "ERROR" {
+		t.Errorf("level: got %v", e["level"])
+	}
+	if e["message"] != "all-features" {
+		t.Errorf("message: got %v", e["message"])
+	}
+
+	// Identity
+	if e["fields.service"] != "myapp" {
+		// "service" is reserved, user field "service" would be prefixed,
+		// but identity sets it directly
+		if e["service"] != "myapp" {
+			t.Errorf("service: got %v", e["service"])
+		}
+	}
+
+	// Event ID
+	eid, _ := e["event_id"].(string)
+	if eid == "" {
+		t.Error("expected event_id")
+	}
+
+	// Full caller path
+	file, _ := e["file"].(string)
+	if !strings.Contains(file, "/") {
+		t.Errorf("expected full caller path, got %v", file)
+	}
+
+	// Context extractor
+	if e["request_id"] != "req-42" {
+		t.Errorf("request_id: got %v", e["request_id"])
+	}
+
+	// Child logger fields
+	if e["component"] != "api" {
+		t.Errorf("component: got %v", e["component"])
+	}
+
+	// Error enrichment
+	if e["err"] != "db timeout" {
+		t.Errorf("err: got %v", e["err"])
+	}
+	if _, exists := e["err_type"]; !exists {
+		t.Error("expected err_type from error enrichment")
+	}
+
+	// Per-call field
+	if e["status"] != float64(500) {
+		t.Errorf("status: got %v", e["status"])
+	}
+
+	// Hook was called
+	if !hookCalled {
+		t.Error("expected hook to be called")
+	}
+	if hookLevel != ERROR {
+		t.Errorf("hook level: got %v", hookLevel)
 	}
 }

@@ -226,7 +226,10 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 	var ctxFields map[string]any
 	if len(l.extractors) > 0 && ctx != nil {
 		for _, extract := range l.extractors {
-			ctxFields = mergeFields(ctxFields, extract(ctx))
+			func() {
+				defer func() { recover() }()
+				ctxFields = mergeFields(ctxFields, extract(ctx))
+			}()
 		}
 	}
 
