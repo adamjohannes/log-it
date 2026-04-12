@@ -58,6 +58,7 @@ type Logger struct {
 	extractors []ContextExtractor
 	identity   *serviceIdentity
 	closed     atomic.Bool
+	exitFunc   func(code int)
 }
 
 // New creates a root Logger that writes to out and discards
@@ -65,7 +66,8 @@ type Logger struct {
 // such as service identity metadata.
 func New(out io.Writer, minLevel Level, opts ...Option) *Logger {
 	l := &Logger{
-		out: out,
+		out:      out,
+		exitFunc: os.Exit,
 	}
 	l.minLevel.Store(int32(minLevel))
 	for _, opt := range opts {
@@ -250,7 +252,7 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	_, _ = r.out.Write(data)
 
 	if level == FATAL {
-		os.Exit(1)
+		r.exitFunc(1)
 	}
 }
 

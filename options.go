@@ -36,3 +36,9 @@ func hostname() string {
 	}
 	return h
 }
+
+// withExitFunc overrides the function called on FATAL (default: os.Exit).
+// Unexported — intended for testing only.
+func withExitFunc(fn func(int)) Option {
+	return func(l *Logger) { l.exitFunc = fn }
+}

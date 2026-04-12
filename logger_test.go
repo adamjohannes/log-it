@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // captureLog runs fn with a DEBUG-level logger writing to a buffer,
@@ -389,4 +391,606 @@ func decodeAllEntries(t *testing.T, buf *bytes.Buffer) []map[string]any {
 		entries = append(entries, entry)
 	}
 	return entries
+}
+
+// noopExit is a test exit function that records the code without exiting.
+func noopExit(code *int) func(int) {
+	return func(c int) { *code = c }
+}
+
+// --- Level filtering & SetLevel/GetLevel tests ---
+
+func TestLevelFiltering(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, WARNING)
+
+	l.Debug("should-drop", nil)
+	l.Info("should-drop", nil)
+	if buf.Len() != 0 {
+		t.Error("expected no output for levels below WARNING")
+	}
+
+	l.Warning("should-write", nil)
+	l.Error("should-also-write", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 2 {
+		t.Errorf("expected 2 entries, got %d", len(entries))
+	}
+}
+
+func TestSetLevelChangesFiltering(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, ERROR)
+
+	l.Info("dropped", nil)
+	if buf.Len() != 0 {
+		t.Error("expected Info to be dropped at ERROR level")
+	}
+
+	l.SetLevel(DEBUG)
+	l.Info("written", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0]["message"] != "written" {
+		t.Errorf("expected message=written, got %v", entries[0]["message"])
+	}
+}
+
+func TestGetLevel(t *testing.T) {
+	l := New(&bytes.Buffer{}, WARNING)
+	if l.GetLevel() != WARNING {
+		t.Errorf("expected WARNING, got %v", l.GetLevel())
+	}
+}
+
+func TestSetLevelOnChild(t *testing.T) {
+	root := New(&bytes.Buffer{}, INFO)
+	child := root.With(map[string]any{"c": true})
+	child.SetLevel(ERROR)
+
+	if root.GetLevel() != ERROR {
+		t.Errorf("expected root level to be ERROR after child.SetLevel, got %v", root.GetLevel())
+	}
+}
+
+func TestGetLevelOnChild(t *testing.T) {
+	root := New(&bytes.Buffer{}, WARNING)
+	child := root.With(nil)
+
+	if child.GetLevel() != WARNING {
+		t.Errorf("expected child.GetLevel()=WARNING, got %v", child.GetLevel())
+	}
+
+	root.SetLevel(DEBUG)
+	if child.GetLevel() != DEBUG {
+		t.Errorf("expected child.GetLevel()=DEBUG after root change, got %v", child.GetLevel())
+	}
+}
+
+// --- Structured methods: all levels ---
+
+func TestAllStructuredLevels(t *testing.T) {
+	type logFunc func(*Logger, string, map[string]any)
+	tests := []struct {
+		name  string
+		fn    logFunc
+		level string
+	}{
+		{"Debug", func(l *Logger, m string, f map[string]any) { l.Debug(m, f) }, "DEBUG"},
+		{"Info", func(l *Logger, m string, f map[string]any) { l.Info(m, f) }, "INFO"},
+		{"Warning", func(l *Logger, m string, f map[string]any) { l.Warning(m, f) }, "WARNING"},
+		{"Error", func(l *Logger, m string, f map[string]any) { l.Error(m, f) }, "ERROR"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := New(&buf, DEBUG)
+			tt.fn(l, "hello", map[string]any{"k": "v"})
+
+			var entry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+				t.Fatal(err)
+			}
+			if entry["level"] != tt.level {
+				t.Errorf("expected level=%s, got %v", tt.level, entry["level"])
+			}
+			if entry["message"] != "hello" {
+				t.Errorf("expected message=hello, got %v", entry["message"])
+			}
+			if entry["k"] != "v" {
+				t.Errorf("expected k=v, got %v", entry["k"])
+			}
+		})
+	}
+}
+
+func TestFatalCallsExitFunc(t *testing.T) {
+	var buf bytes.Buffer
+	var exitCode int
+	l := New(&buf, DEBUG, withExitFunc(noopExit(&exitCode)))
+
+	l.Fatal("boom", map[string]any{"reason": "test"})
+
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "FATAL" {
+		t.Errorf("expected level=FATAL, got %v", entry["level"])
+	}
+	if entry["reason"] != "test" {
+		t.Errorf("expected reason=test, got %v", entry["reason"])
+	}
+}
+
+func TestFatalWritesBeforeExiting(t *testing.T) {
+	var buf bytes.Buffer
+	var written bool
+	l := New(&buf, DEBUG, withExitFunc(func(int) {
+		written = buf.Len() > 0
+	}))
+
+	l.Fatal("last-words", nil)
+
+	if !written {
+		t.Error("expected log entry to be written before exitFunc was called")
+	}
+}
+
+// --- Formatted methods ---
+
+func TestAllFormattedLevels(t *testing.T) {
+	type logFunc func(*Logger, string, ...interface{})
+	tests := []struct {
+		name  string
+		fn    logFunc
+		level string
+	}{
+		{"Debugf", func(l *Logger, f string, v ...interface{}) { l.Debugf(f, v...) }, "DEBUG"},
+		{"Infof", func(l *Logger, f string, v ...interface{}) { l.Infof(f, v...) }, "INFO"},
+		{"Warningf", func(l *Logger, f string, v ...interface{}) { l.Warningf(f, v...) }, "WARNING"},
+		{"Errorf", func(l *Logger, f string, v ...interface{}) { l.Errorf(f, v...) }, "ERROR"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := New(&buf, DEBUG)
+			tt.fn(l, "count=%d name=%s", 42, "alice")
+
+			var entry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+				t.Fatal(err)
+			}
+			if entry["level"] != tt.level {
+				t.Errorf("expected level=%s, got %v", tt.level, entry["level"])
+			}
+			if entry["message"] != "count=42 name=alice" {
+				t.Errorf("expected interpolated message, got %v", entry["message"])
+			}
+		})
+	}
+}
+
+func TestFatalfCallsExitFunc(t *testing.T) {
+	var buf bytes.Buffer
+	var exitCode int
+	l := New(&buf, DEBUG, withExitFunc(noopExit(&exitCode)))
+
+	l.Fatalf("fatal: %s", "reason")
+
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["message"] != "fatal: reason" {
+		t.Errorf("expected interpolated message, got %v", entry["message"])
+	}
+}
+
+func TestFormattedMethodsHaveNoFields(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Infof("hello %s", "world")
+	})
+
+	// Should have exactly 4 core keys, no user fields
+	if len(entry) != 4 {
+		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	}
+}
+
+// --- Context methods ---
+
+func TestAllContextLevels(t *testing.T) {
+	type ctxKey string
+	type logFunc func(*Logger, context.Context, string, map[string]any)
+	tests := []struct {
+		name  string
+		fn    logFunc
+		level string
+	}{
+		{"DebugContext", func(l *Logger, ctx context.Context, m string, f map[string]any) { l.DebugContext(ctx, m, f) }, "DEBUG"},
+		{"InfoContext", func(l *Logger, ctx context.Context, m string, f map[string]any) { l.InfoContext(ctx, m, f) }, "INFO"},
+		{"WarningContext", func(l *Logger, ctx context.Context, m string, f map[string]any) { l.WarningContext(ctx, m, f) }, "WARNING"},
+		{"ErrorContext", func(l *Logger, ctx context.Context, m string, f map[string]any) { l.ErrorContext(ctx, m, f) }, "ERROR"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := New(&buf, DEBUG)
+			child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+				if v := ctx.Value(ctxKey("rid")); v != nil {
+					return map[string]any{"request_id": v}
+				}
+				return nil
+			})
+
+			ctx := context.WithValue(context.Background(), ctxKey("rid"), "req-1")
+			tt.fn(child, ctx, "ctx-log", nil)
+
+			var entry map[string]any
+			if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+				t.Fatal(err)
+			}
+			if entry["level"] != tt.level {
+				t.Errorf("expected level=%s, got %v", tt.level, entry["level"])
+			}
+			if entry["request_id"] != "req-1" {
+				t.Errorf("expected request_id=req-1, got %v", entry["request_id"])
+			}
+		})
+	}
+}
+
+func TestFatalContextCallsExitFunc(t *testing.T) {
+	var buf bytes.Buffer
+	var exitCode int
+	l := New(&buf, DEBUG, withExitFunc(noopExit(&exitCode)))
+
+	l.FatalContext(context.Background(), "fatal-ctx", map[string]any{"x": 1})
+
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "FATAL" {
+		t.Errorf("expected level=FATAL, got %v", entry["level"])
+	}
+}
+
+func TestContextMethodsWithNilContext(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"should_not": "appear"}
+	})
+
+	// nil context — extractors should be skipped, no panic
+	child.InfoContext(nil, "nil-ctx", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["message"] != "nil-ctx" {
+		t.Errorf("expected message=nil-ctx, got %v", entry["message"])
+	}
+	if _, exists := entry["should_not"]; exists {
+		t.Error("expected extractor to be skipped with nil context")
+	}
+}
+
+func TestContextMethodsWithNilExtractorResult(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return nil // extractor returns nil
+	})
+
+	child.InfoContext(context.Background(), "nil-result", map[string]any{"a": 1})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["a"] != float64(1) {
+		t.Errorf("expected a=1, got %v", entry["a"])
+	}
+}
+
+// --- Field priority & merge precedence ---
+
+func TestFieldPriority_PerCallOverridesContext(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.With(map[string]any{"x": "persistent"})
+	child = child.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"x": "context"}
+	})
+
+	child.InfoContext(context.Background(), "priority", map[string]any{"x": "per-call"})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["x"] != "per-call" {
+		t.Errorf("expected x=per-call (highest priority), got %v", entry["x"])
+	}
+}
+
+func TestFieldPriority_ContextOverridesPersistent(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.With(map[string]any{"x": "persistent"})
+	child = child.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"x": "context"}
+	})
+
+	child.InfoContext(context.Background(), "priority", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["x"] != "context" {
+		t.Errorf("expected x=context (overrides persistent), got %v", entry["x"])
+	}
+}
+
+func TestFieldPriority_PersistentIsDefault(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		child := l.With(map[string]any{"x": "persistent"})
+		child.Info("priority", nil)
+	})
+
+	if entry["x"] != "persistent" {
+		t.Errorf("expected x=persistent, got %v", entry["x"])
+	}
+}
+
+func TestMultipleExtractors(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"a": "from-ext1"}
+	}).WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"b": "from-ext2"}
+	})
+
+	child.InfoContext(context.Background(), "multi", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["a"] != "from-ext1" {
+		t.Errorf("expected a=from-ext1, got %v", entry["a"])
+	}
+	if entry["b"] != "from-ext2" {
+		t.Errorf("expected b=from-ext2, got %v", entry["b"])
+	}
+}
+
+func TestMultipleExtractorsCollision(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	child := l.WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"x": "first"}
+	}).WithContextExtractor(func(ctx context.Context) map[string]any {
+		return map[string]any{"x": "second"}
+	})
+
+	child.InfoContext(context.Background(), "collision", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	// Second extractor merges over first
+	if entry["x"] != "second" {
+		t.Errorf("expected x=second (last extractor wins), got %v", entry["x"])
+	}
+}
+
+// --- Edge cases ---
+
+func TestJsonMarshalFailure(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	// func() is not JSON-marshalable
+	l.Info("bad-field", map[string]any{"fn": func() {}})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "ERROR" {
+		t.Errorf("expected fallback level=ERROR, got %v", entry["level"])
+	}
+	msg, _ := entry["message"].(string)
+	if !strings.Contains(msg, "failed to marshal log entry to json") {
+		t.Errorf("expected English fallback message, got %v", msg)
+	}
+}
+
+func TestLevelStringUnknown(t *testing.T) {
+	if Level(99).String() != "UNKNOWN" {
+		t.Errorf("expected UNKNOWN for invalid level, got %s", Level(99).String())
+	}
+}
+
+func TestTimestampFormat(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Info("ts-test", nil)
+	})
+
+	ts, ok := entry["time"].(string)
+	if !ok {
+		t.Fatal("time is not a string")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, ts); err != nil {
+		t.Errorf("time %q is not valid RFC3339Nano: %v", ts, err)
+	}
+}
+
+func TestEmptyMessage(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Info("", nil)
+	})
+
+	if entry["message"] != "" {
+		t.Errorf("expected empty message, got %v", entry["message"])
+	}
+}
+
+func TestWriteAfterSyncContextMethod(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.InfoContext(context.Background(), "before", nil)
+
+	_ = l.Sync()
+	before := buf.Len()
+
+	l.InfoContext(context.Background(), "after", nil)
+	if buf.Len() != before {
+		t.Error("expected context log after Sync to be dropped")
+	}
+}
+
+// --- Concurrency tests ---
+
+func TestConcurrentSetLevelAndLogging(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	var wg sync.WaitGroup
+
+	// 10 goroutines logging
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				l.Info("concurrent", map[string]any{"j": j})
+			}
+		}()
+	}
+
+	// 1 goroutine flipping level
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 100; j++ {
+			if j%2 == 0 {
+				l.SetLevel(ERROR)
+			} else {
+				l.SetLevel(DEBUG)
+			}
+		}
+	}()
+
+	wg.Wait()
+	// If we got here without -race failing, the test passes.
+}
+
+func TestConcurrentSyncAndLogging(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	var wg sync.WaitGroup
+
+	// Goroutines logging
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				l.Info("log", nil)
+			}
+		}()
+	}
+
+	// Another goroutine calling Sync
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = l.Sync()
+	}()
+
+	wg.Wait()
+	// No panics or races = pass.
+}
+
+// --- Child logger isolation ---
+
+func TestChildSiblingIsolation(t *testing.T) {
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG)
+	child1 := root.With(map[string]any{"a": 1})
+	child2 := root.With(map[string]any{"b": 2})
+
+	child1.Info("c1", nil)
+	child2.Info("c2", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(entries))
+	}
+
+	// child1's entry should have "a" but not "b"
+	e1 := entries[0]
+	if e1["a"] != float64(1) {
+		t.Errorf("child1: expected a=1, got %v", e1["a"])
+	}
+	if _, exists := e1["b"]; exists {
+		t.Error("child1: should not have field 'b' from sibling")
+	}
+
+	// child2's entry should have "b" but not "a"
+	e2 := entries[1]
+	if e2["b"] != float64(2) {
+		t.Errorf("child2: expected b=2, got %v", e2["b"])
+	}
+	if _, exists := e2["a"]; exists {
+		t.Error("child2: should not have field 'a' from sibling")
+	}
+}
+
+func TestChainedWithPrecedence(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		child := l.With(map[string]any{"x": 1}).With(map[string]any{"x": 2})
+		child.Info("chained", nil)
+	})
+
+	if entry["x"] != float64(2) {
+		t.Errorf("expected x=2 (second With wins), got %v", entry["x"])
+	}
+}
+
+func TestWithNilFields(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		child := l.With(nil)
+		child.Info("nil-fields", nil)
+	})
+
+	if entry["message"] != "nil-fields" {
+		t.Errorf("expected message=nil-fields, got %v", entry["message"])
+	}
 }
