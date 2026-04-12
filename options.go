@@ -42,3 +42,17 @@ func hostname() string {
 func withExitFunc(fn func(int)) Option {
 	return func(l *Logger) { l.exitFunc = fn }
 }
+
+// WithHooks registers hook functions that are called after every log
+// entry is written. Hooks receive the level, message, and merged fields.
+// They run synchronously under the logger's mutex — keep them fast.
+func WithHooks(hooks ...Hook) Option {
+	return func(l *Logger) { l.hooks = hooks }
+}
+
+// WithFormatter sets the output format for log entries.
+// Defaults to JSONFormatter if not specified.
+// Use TextFormatter{} for human-readable output in development.
+func WithFormatter(f Formatter) Option {
+	return func(l *Logger) { l.formatter = f }
+}

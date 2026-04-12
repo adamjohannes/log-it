@@ -1,0 +1,115 @@
+package logger
+
+import (
+	"context"
+	"log/slog"
+	"runtime"
+)
+
+// SlogHandler implements slog.Handler, bridging Go's standard
+// structured logging into this logger. Use it with:
+//
+//	slogLogger := slog.New(logger.NewSlogHandler(myLogger))
+type SlogHandler struct {
+	logger *Logger
+	attrs  []slog.Attr
+	group  string
+}
+
+// NewSlogHandler creates a slog.Handler that routes log entries
+// through the provided Logger.
+func NewSlogHandler(l *Logger) *SlogHandler {
+	return &SlogHandler{logger: l}
+}
+
+// Enabled reports whether the handler handles records at the given level.
+func (h *SlogHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return slogLevelToLevel(level) >= h.logger.GetLevel()
+}
+
+// Handle processes a slog.Record by converting it to our logger's format.
+func (h *SlogHandler) Handle(ctx context.Context, record slog.Record) error {
+	fields := make(map[string]any, record.NumAttrs()+len(h.attrs))
+
+	// Pre-set attrs from WithAttrs
+	for _, a := range h.attrs {
+		fields[h.prefixKey(a.Key)] = a.Value.Any()
+	}
+
+	// Record attrs
+	record.Attrs(func(a slog.Attr) bool {
+		fields[h.prefixKey(a.Key)] = a.Value.Any()
+		return true
+	})
+
+	// Extract source from record's PC if available
+	if record.PC != 0 {
+		fs := runtime.CallersFrames([]uintptr{record.PC})
+		f, _ := fs.Next()
+		if f.File != "" {
+			fields["slog_source"] = f.File + ":" + itoa(f.Line)
+		}
+	}
+
+	level := slogLevelToLevel(record.Level)
+	r := h.logger.root()
+
+	if r.closed.Load() {
+		return nil
+	}
+
+	allFields := mergeFields(h.logger.fields, fields)
+	h.logger.writeEntry(r, level, record.Message, allFields)
+	return nil
+}
+
+// WithAttrs returns a new handler with the given attributes pre-set.
+func (h *SlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
+	copy(newAttrs, h.attrs)
+	copy(newAttrs[len(h.attrs):], attrs)
+	return &SlogHandler{logger: h.logger, attrs: newAttrs, group: h.group}
+}
+
+// WithGroup returns a new handler with the given group name.
+// All subsequent attributes will be prefixed with "group.".
+func (h *SlogHandler) WithGroup(name string) slog.Handler {
+	prefix := name
+	if h.group != "" {
+		prefix = h.group + "." + name
+	}
+	return &SlogHandler{logger: h.logger, attrs: h.attrs, group: prefix}
+}
+
+// prefixKey prepends the group name to a key.
+func (h *SlogHandler) prefixKey(key string) string {
+	if h.group == "" {
+		return key
+	}
+	return h.group + "." + key
+}
+
+// slogLevelToLevel maps slog levels to our Level type.
+func slogLevelToLevel(l slog.Level) Level {
+	switch {
+	case l < slog.LevelInfo:
+		return DEBUG
+	case l < slog.LevelWarn:
+		return INFO
+	case l < slog.LevelError:
+		return WARNING
+	default:
+		return ERROR
+	}
+}
+
+// itoa is a simple int-to-string without importing strconv.
+func itoa(i int) string {
+	if i < 0 {
+		return "-" + itoa(-i)
+	}
+	if i < 10 {
+		return string(rune('0' + i))
+	}
+	return itoa(i/10) + string(rune('0'+i%10))
+}

@@ -2,7 +2,6 @@ package logger
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -59,6 +58,8 @@ type Logger struct {
 	identity   *serviceIdentity
 	closed     atomic.Bool
 	exitFunc   func(code int)
+	hooks      []Hook
+	formatter  Formatter
 }
 
 // New creates a root Logger that writes to out and discards
@@ -66,8 +67,9 @@ type Logger struct {
 // such as service identity metadata.
 func New(out io.Writer, minLevel Level, opts ...Option) *Logger {
 	l := &Logger{
-		out:      out,
-		exitFunc: os.Exit,
+		out:       out,
+		exitFunc:  os.Exit,
+		formatter: JSONFormatter{},
 	}
 	l.minLevel.Store(int32(minLevel))
 	for _, opt := range opts {
@@ -228,6 +230,8 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		entry["host"] = id.Host
 	}
 
+	fields = enrichErrors(fields)
+
 	for k, v := range fields {
 		if _, ok := reservedKeys[k]; ok {
 			entry["fields."+k] = v
@@ -236,7 +240,7 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		}
 	}
 
-	data, err := json.Marshal(entry)
+	data, err := r.formatter.Format(entry)
 	if err != nil {
 		data = []byte(fmt.Sprintf(
 			`{"time":"%s","level":"ERROR","message":"failed to marshal log entry to json: %v"}`,
@@ -250,6 +254,15 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 
 	data = append(data, '\n')
 	_, _ = r.out.Write(data)
+
+	if hooks := r.hooks; len(hooks) > 0 {
+		for _, hook := range hooks {
+			func() {
+				defer func() { recover() }()
+				hook(level, message, fields)
+			}()
+		}
+	}
 
 	if level == FATAL {
 		r.exitFunc(1)
