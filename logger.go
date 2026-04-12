@@ -60,6 +60,7 @@ type Logger struct {
 	exitFunc   func(code int)
 	hooks      []Hook
 	formatter  Formatter
+	sampler    Sampler
 }
 
 // New creates a root Logger that writes to out and discards
@@ -167,13 +168,20 @@ func mergeFields(base, overlay map[string]any) map[string]any {
 }
 
 // internalLog checks the level, merges persistent fields, and writes the entry.
-func (l *Logger) internalLog(level Level, message string, fields map[string]interface{}) {
+//
+//go:noinline
+func (l *Logger) internalLog(level Level, message string, fields map[string]any) {
 	r := l.root()
 	if r.closed.Load() {
 		return
 	}
 	if level < Level(r.minLevel.Load()) {
 		return
+	}
+	if s := r.sampler; s != nil && level < ERROR {
+		if !s.Sample(level, message) {
+			return
+		}
 	}
 
 	allFields := mergeFields(l.fields, fields)
@@ -182,6 +190,8 @@ func (l *Logger) internalLog(level Level, message string, fields map[string]inte
 
 // internalLogCtx is like internalLog but also runs context extractors.
 // Field priority: per-call > context-extracted > persistent (.With()).
+//
+//go:noinline
 func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string, fields map[string]any) {
 	r := l.root()
 	if r.closed.Load() {
@@ -189,6 +199,11 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 	}
 	if level < Level(r.minLevel.Load()) {
 		return
+	}
+	if s := r.sampler; s != nil && level < ERROR {
+		if !s.Sample(level, message) {
+			return
+		}
 	}
 
 	var ctxFields map[string]any
@@ -206,6 +221,8 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 // and writes it to the root logger's output under its mutex.
 //
 // runtime.Caller skip=3: writeEntry -> internalLog/internalLogCtx -> public method -> caller
+//
+//go:noinline
 func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[string]any) {
 	_, file, line, ok := runtime.Caller(3)
 	if !ok {
@@ -271,19 +288,19 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 
 // --- Structured log methods ---
 
-func (l *Logger) Debug(message string, fields map[string]interface{})   { l.internalLog(DEBUG, message, fields) }
-func (l *Logger) Info(message string, fields map[string]interface{})    { l.internalLog(INFO, message, fields) }
-func (l *Logger) Warning(message string, fields map[string]interface{}) { l.internalLog(WARNING, message, fields) }
-func (l *Logger) Error(message string, fields map[string]interface{})   { l.internalLog(ERROR, message, fields) }
-func (l *Logger) Fatal(message string, fields map[string]interface{})   { l.internalLog(FATAL, message, fields) }
+func (l *Logger) Debug(message string, fields map[string]any)   { l.internalLog(DEBUG, message, fields) }
+func (l *Logger) Info(message string, fields map[string]any)    { l.internalLog(INFO, message, fields) }
+func (l *Logger) Warning(message string, fields map[string]any) { l.internalLog(WARNING, message, fields) }
+func (l *Logger) Error(message string, fields map[string]any)   { l.internalLog(ERROR, message, fields) }
+func (l *Logger) Fatal(message string, fields map[string]any)   { l.internalLog(FATAL, message, fields) }
 
 // --- Formatted log methods ---
 
-func (l *Logger) Debugf(format string, v ...interface{})   { l.internalLog(DEBUG, fmt.Sprintf(format, v...), nil) }
-func (l *Logger) Infof(format string, v ...interface{})    { l.internalLog(INFO, fmt.Sprintf(format, v...), nil) }
-func (l *Logger) Warningf(format string, v ...interface{}) { l.internalLog(WARNING, fmt.Sprintf(format, v...), nil) }
-func (l *Logger) Errorf(format string, v ...interface{})   { l.internalLog(ERROR, fmt.Sprintf(format, v...), nil) }
-func (l *Logger) Fatalf(format string, v ...interface{})   { l.internalLog(FATAL, fmt.Sprintf(format, v...), nil) }
+func (l *Logger) Debugf(format string, v ...any)   { l.internalLog(DEBUG, fmt.Sprintf(format, v...), nil) }
+func (l *Logger) Infof(format string, v ...any)    { l.internalLog(INFO, fmt.Sprintf(format, v...), nil) }
+func (l *Logger) Warningf(format string, v ...any) { l.internalLog(WARNING, fmt.Sprintf(format, v...), nil) }
+func (l *Logger) Errorf(format string, v ...any)   { l.internalLog(ERROR, fmt.Sprintf(format, v...), nil) }
+func (l *Logger) Fatalf(format string, v ...any)   { l.internalLog(FATAL, fmt.Sprintf(format, v...), nil) }
 
 // --- Context-aware log methods ---
 
@@ -292,3 +309,11 @@ func (l *Logger) InfoContext(ctx context.Context, message string, fields map[str
 func (l *Logger) WarningContext(ctx context.Context, message string, fields map[string]any) { l.internalLogCtx(ctx, WARNING, message, fields) }
 func (l *Logger) ErrorContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, ERROR, message, fields) }
 func (l *Logger) FatalContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, FATAL, message, fields) }
+
+// --- Typed field log methods (zero-allocation constructors) ---
+
+func (l *Logger) Debugw(message string, fields ...Field)   { l.internalLog(DEBUG, message, fieldsToMap(fields)) }
+func (l *Logger) Infow(message string, fields ...Field)    { l.internalLog(INFO, message, fieldsToMap(fields)) }
+func (l *Logger) Warningw(message string, fields ...Field) { l.internalLog(WARNING, message, fieldsToMap(fields)) }
+func (l *Logger) Errorw(message string, fields ...Field)   { l.internalLog(ERROR, message, fieldsToMap(fields)) }
+func (l *Logger) Fatalw(message string, fields ...Field)   { l.internalLog(FATAL, message, fieldsToMap(fields)) }

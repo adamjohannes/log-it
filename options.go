@@ -56,3 +56,10 @@ func WithHooks(hooks ...Hook) Option {
 func WithFormatter(f Formatter) Option {
 	return func(l *Logger) { l.formatter = f }
 }
+
+// WithSampler sets a sampler that controls which log entries are written.
+// ERROR and FATAL entries always pass through regardless of the sampler.
+// Use NewEveryNSampler or NewRateSampler, or implement the Sampler interface.
+func WithSampler(s Sampler) Option {
+	return func(l *Logger) { l.sampler = s }
+}

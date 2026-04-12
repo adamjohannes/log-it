@@ -173,8 +173,12 @@ func TestCoreKeysPresent(t *testing.T) {
 	if _, ok := entry["time"].(string); !ok {
 		t.Error("expected time to be a string")
 	}
-	if _, ok := entry["file"].(string); !ok {
+	file, ok := entry["file"].(string)
+	if !ok {
 		t.Error("expected file to be a string")
+	}
+	if !strings.Contains(file, "logger_test.go") {
+		t.Errorf("expected file to contain logger_test.go, got %v", file)
 	}
 }
 
