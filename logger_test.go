@@ -774,7 +774,7 @@ func TestContextMethodsWithNilContext(t *testing.T) {
 	})
 
 	// nil context — extractors should be skipped, no panic
-	child.InfoContext(nil, "nil-ctx", nil)
+	child.InfoContext(nil, "nil-ctx", nil) //nolint:staticcheck // deliberately testing nil context behavior
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {

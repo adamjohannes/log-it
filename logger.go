@@ -227,7 +227,7 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 	if len(l.extractors) > 0 && ctx != nil {
 		for _, extract := range l.extractors {
 			func() {
-				defer func() { recover() }()
+				defer func() { _ = recover() }()
 				ctxFields = mergeFields(ctxFields, extract(ctx))
 			}()
 		}
@@ -302,7 +302,7 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	if hooks := r.hooks; len(hooks) > 0 {
 		for _, hook := range hooks {
 			func() {
-				defer func() { recover() }()
+				defer func() { _ = recover() }()
 				hook(level, message, fields)
 			}()
 		}
