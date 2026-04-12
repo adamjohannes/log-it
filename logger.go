@@ -56,15 +56,21 @@ type Logger struct {
 	fields     map[string]any
 	parent     *Logger
 	extractors []ContextExtractor
+	identity   *serviceIdentity
+	closed     atomic.Bool
 }
 
 // New creates a root Logger that writes to out and discards
-// entries below minLevel.
-func New(out io.Writer, minLevel Level) *Logger {
+// entries below minLevel. Options configure additional behavior
+// such as service identity metadata.
+func New(out io.Writer, minLevel Level, opts ...Option) *Logger {
 	l := &Logger{
 		out: out,
 	}
 	l.minLevel.Store(int32(minLevel))
+	for _, opt := range opts {
+		opt(l)
+	}
 	return l
 }
 
@@ -77,6 +83,26 @@ func (l *Logger) SetLevel(level Level) {
 // GetLevel atomically returns the current minimum log level.
 func (l *Logger) GetLevel() Level {
 	return Level(l.root().minLevel.Load())
+}
+
+// Sync flushes any buffered log data to the underlying writer and
+// prevents further log entries from being accepted. Call Sync before
+// application exit to avoid losing log entries.
+//
+// For AsyncWriter destinations, this blocks until all queued entries
+// are written. For FanOutWriter, each underlying writer is synced.
+// For plain io.Writers (like os.Stdout), this is a no-op.
+//
+// Sync is safe to call on child loggers — it always syncs the root.
+func (l *Logger) Sync() error {
+	r := l.root()
+	r.closed.Store(true)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if s, ok := r.out.(Syncer); ok {
+		return s.Sync()
+	}
+	return nil
 }
 
 // root returns the root logger. Since With() flattens the chain,
@@ -111,6 +137,13 @@ func (l *Logger) WithContextExtractor(fn ContextExtractor) *Logger {
 	return child
 }
 
+// reservedKeys are core entry keys that cannot be overwritten by user fields.
+// If a user field collides, it is prefixed with "fields." (e.g., "fields.level").
+var reservedKeys = map[string]struct{}{
+	"time": {}, "level": {}, "message": {}, "file": {},
+	"service": {}, "version": {}, "env": {}, "host": {},
+}
+
 // mergeFields combines two field maps. Overlay keys take precedence.
 func mergeFields(base, overlay map[string]any) map[string]any {
 	if len(base) == 0 {
@@ -132,6 +165,9 @@ func mergeFields(base, overlay map[string]any) map[string]any {
 // internalLog checks the level, merges persistent fields, and writes the entry.
 func (l *Logger) internalLog(level Level, message string, fields map[string]interface{}) {
 	r := l.root()
+	if r.closed.Load() {
+		return
+	}
 	if level < Level(r.minLevel.Load()) {
 		return
 	}
@@ -144,6 +180,9 @@ func (l *Logger) internalLog(level Level, message string, fields map[string]inte
 // Field priority: per-call > context-extracted > persistent (.With()).
 func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string, fields map[string]any) {
 	r := l.root()
+	if r.closed.Load() {
+		return
+	}
 	if level < Level(r.minLevel.Load()) {
 		return
 	}
@@ -159,7 +198,7 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 	l.writeEntry(r, level, message, allFields)
 }
 
-// writeEntry collects caller info, serializes the entry as JSON,
+// writeEntry collects caller info, serializes the entry as flat JSON,
 // and writes it to the root logger's output under its mutex.
 //
 // runtime.Caller skip=3: writeEntry -> internalLog/internalLogCtx -> public method -> caller
@@ -174,24 +213,31 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		}
 	}
 
-	entry := struct {
-		Time    string         `json:"time"`
-		Level   string         `json:"level"`
-		Message string         `json:"message"`
-		File    string         `json:"file,omitempty"`
-		Fields  map[string]any `json:"fields,omitempty"`
-	}{
-		Time:    time.Now().UTC().Format(time.RFC3339Nano),
-		Level:   level.String(),
-		Message: message,
-		File:    fmt.Sprintf("%s:%d", file, line),
-		Fields:  fields,
+	entry := make(map[string]any, 4+len(fields))
+	entry["time"] = time.Now().UTC().Format(time.RFC3339Nano)
+	entry["level"] = level.String()
+	entry["message"] = message
+	entry["file"] = fmt.Sprintf("%s:%d", file, line)
+
+	if id := r.identity; id != nil {
+		entry["service"] = id.Service
+		entry["version"] = id.Version
+		entry["env"] = id.Env
+		entry["host"] = id.Host
+	}
+
+	for k, v := range fields {
+		if _, ok := reservedKeys[k]; ok {
+			entry["fields."+k] = v
+		} else {
+			entry[k] = v
+		}
 	}
 
 	data, err := json.Marshal(entry)
 	if err != nil {
 		data = []byte(fmt.Sprintf(
-			`{"time":"%s","level":"ERROR","message":"falha ao converter entrada de log para json: %v"}`,
+			`{"time":"%s","level":"ERROR","message":"failed to marshal log entry to json: %v"}`,
 			time.Now().UTC().Format(time.RFC3339Nano),
 			err,
 		))
