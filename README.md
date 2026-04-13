@@ -1,6 +1,6 @@
 # log-it
 
-A structured, leveled JSON logger for Go. Pure stdlib, zero dependencies, 235 tests.
+A structured, leveled JSON logger for Go. Pure stdlib, zero dependencies.
 
 ```go
 import logger "github.com/adamjohannes/log-it"
@@ -602,8 +602,15 @@ log := logtest.NewTLogger(t)
 
 ## Testing
 
-235 tests covering all public API, error paths, concurrency, and feature combinations. All passing with `-race`:
+All public API, error paths, concurrency, and feature combinations are covered. All tests pass with `-race`:
 
 ```bash
 go test -race -v -count=1 ./...
+```
+
+A pre-flight script mirrors the full CI pipeline locally (build, vet, tests, lint, cross-compilation, benchmarks):
+
+```bash
+./scripts/pre-flight.sh          # full run
+./scripts/pre-flight.sh --quick  # skip stress tests and lint
 ```
