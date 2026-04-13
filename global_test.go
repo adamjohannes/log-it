@@ -2,6 +2,8 @@ package logger
 
 import (
 	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -78,5 +80,27 @@ func TestFromContextFallsBackToDefault(t *testing.T) {
 	l := FromContext(nil) //nolint:staticcheck // deliberately testing nil context
 	if l != custom {
 		t.Error("expected FromContext to fall back to custom Default")
+	}
+}
+
+func TestSetDefaultSyncsSlog(t *testing.T) {
+	var buf bytes.Buffer
+	custom := New(&buf, DEBUG)
+
+	prev := ReplaceDefault(custom)
+	defer func() {
+		if prev != nil {
+			SetDefault(prev)
+		} else {
+			defaultLogger.Store(nil)
+		}
+	}()
+
+	// slog.Default() should now route through our logger
+	slog.Info("from-slog", "key", "value")
+
+	output := buf.String()
+	if !strings.Contains(output, "from-slog") {
+		t.Errorf("expected slog output in our buffer, got: %s", output)
 	}
 }
