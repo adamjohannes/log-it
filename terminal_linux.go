@@ -2,10 +2,14 @@
 
 package logger
 
-import "syscall"
+import (
+	"syscall"
+	"unsafe"
+)
 
 // isTerminal reports whether the given file descriptor is a terminal.
 func isTerminal(fd uintptr) bool {
-	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, 0)
+	var termios syscall.Termios
+	_, _, err := syscall.Syscall(syscall.SYS_IOCTL, fd, syscall.TCGETS, uintptr(unsafe.Pointer(&termios)))
 	return err == 0
 }
