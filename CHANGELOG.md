@@ -27,8 +27,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `DatadogKeyMap` and `ELKKeyMap` cloud provider presets alongside existing `GCPKeyMap`
 - `Unwrap()` method on `AsyncWriter`, `FanOutWriter`, and `FilteredWriter` for terminal detection through wrapper layers
 - `Middleware` type for pre-write entry interception
-- 7 new `Example*` functions (LogfmtFormatter, FilteredWriter, WithRedactFields, WithMiddleware, WithFallbackWriter, WithStackTrace, OTel trace context)
 - `SetDefault()` and `ReplaceDefault()` now automatically call `slog.SetDefault()` for seamless slog interop
+- `scripts/pre-flight.sh` for local CI validation with cross-compilation checks
 
 ### Changed
 
@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `Sync()` now ignores known benign errors ("invalid argument", "inappropriate ioctl for device") from non-file descriptors
 - `FilteredWriter` works correctly with KeyMap remapping via `WithLevelKey`
 - `WithAutoFormat()` detects terminals through wrapped writers (`AsyncWriter`, `FanOutWriter`, `FilteredWriter`)
+- Terminal detection uses platform-specific ioctl (`TIOCGETA` on BSD, `TCGETS` on Linux) instead of BSD-only constant that broke Linux builds
 
 ## [0.2.0] - 2026-04-12
 
