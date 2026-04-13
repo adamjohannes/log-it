@@ -10,7 +10,7 @@ import (
 
 func ExampleNew() {
 	log := logger.New(os.Stdout, logger.INFO)
-	defer log.Sync()
+	defer func() { _ = log.Sync() }()
 
 	log.Info("server started", map[string]any{"port": 8080})
 }
@@ -92,7 +92,7 @@ func ExampleNewAsyncWriter() {
 	fan := logger.NewFanOutWriter(os.Stdout, file)
 	async := logger.NewAsyncWriter(fan, 4096)
 	log := logger.New(async, logger.INFO)
-	defer log.Sync() // flush async buffer + fsync file
+	defer func() { _ = log.Sync() }() // flush async buffer + fsync file
 
 	log.Info("multi-destination", nil)
 
