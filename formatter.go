@@ -15,10 +15,17 @@ type Formatter interface {
 
 // JSONFormatter serializes entries as single-line JSON.
 // This is the default formatter.
-type JSONFormatter struct{}
+type JSONFormatter struct {
+	// KeyMap remaps core field names before serialization.
+	// Example: {"level": "severity"} renames the "level" key to "severity".
+	KeyMap map[string]string
+}
 
-// Format marshals the entry map to JSON.
-func (JSONFormatter) Format(entry map[string]any) ([]byte, error) {
+// Format marshals the entry map to JSON, applying key remapping if configured.
+func (f JSONFormatter) Format(entry map[string]any) ([]byte, error) {
+	if len(f.KeyMap) > 0 {
+		entry = applyKeyMap(entry, f.KeyMap)
+	}
 	return json.Marshal(entry)
 }
 
@@ -29,11 +36,16 @@ func (JSONFormatter) Format(entry map[string]any) ([]byte, error) {
 //
 //	2026-04-12T14:32:07Z INFO    [main.go:42] hello  user_id=42 status=ok
 type TextFormatter struct {
-	NoColor bool // disable ANSI color codes
+	NoColor bool              // disable ANSI color codes
+	KeyMap  map[string]string // remap core field names
 }
 
 // Format renders the entry as a single line of human-readable text.
 func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
+	if len(f.KeyMap) > 0 {
+		entry = applyKeyMap(entry, f.KeyMap)
+	}
+
 	var buf bytes.Buffer
 
 	ts, _ := entry["time"].(string)
@@ -93,4 +105,23 @@ func sanitizeText(s string) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	return s
+}
+
+// applyKeyMap renames keys in the entry map according to the provided mapping.
+func applyKeyMap(entry map[string]any, keyMap map[string]string) map[string]any {
+	remapped := make(map[string]any, len(entry))
+	for k, v := range entry {
+		if newKey, ok := keyMap[k]; ok {
+			remapped[newKey] = v
+		} else {
+			remapped[k] = v
+		}
+	}
+	return remapped
+}
+
+// GCPKeyMap is a key remapping preset for Google Cloud Logging compatibility.
+var GCPKeyMap = map[string]string{
+	"level":   "severity",
+	"message": "textPayload",
 }
