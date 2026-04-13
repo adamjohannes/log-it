@@ -6,7 +6,13 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
+
+// bufPool provides reusable byte buffers for formatters and the write path.
+var bufPool = sync.Pool{
+	New: func() any { return bytes.NewBuffer(make([]byte, 0, 256)) },
+}
 
 // Formatter serializes a log entry map into bytes.
 type Formatter interface {
@@ -46,7 +52,9 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 		entry = applyKeyMap(entry, f.KeyMap)
 	}
 
-	var buf bytes.Buffer
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
 
 	ts, _ := entry["time"].(string)
 	level, _ := entry["level"].(string)
@@ -58,7 +66,7 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 		displayLevel = colorize(level)
 	}
 
-	fmt.Fprintf(&buf, "%s %-7s [%s] %s", ts, displayLevel, file, sanitizeText(msg))
+	fmt.Fprintf(buf, "%s %-7s [%s] %s", ts, displayLevel, file, sanitizeText(msg))
 
 	// Collect extra keys in sorted order for deterministic output
 	coreKeys := map[string]struct{}{
@@ -73,10 +81,13 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 	sort.Strings(extraKeys)
 
 	for _, k := range extraKeys {
-		fmt.Fprintf(&buf, "  %s=%s", k, sanitizeText(fmt.Sprintf("%v", entry[k])))
+		fmt.Fprintf(buf, "  %s=%s", k, sanitizeText(fmt.Sprintf("%v", entry[k])))
 	}
 
-	return buf.Bytes(), nil
+	// Copy result before returning buffer to pool
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 // colorize wraps a level string with ANSI color codes.

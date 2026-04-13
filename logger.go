@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -358,13 +359,19 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		data, _ = json.Marshal(fallback)
 	}
 
+	// Use pooled buffer to append newline and write atomically
+	writeBuf := bufPool.Get().(*bytes.Buffer)
+	writeBuf.Reset()
+	writeBuf.Write(data)
+	writeBuf.WriteByte('\n')
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	data = append(data, '\n')
-	if _, err := r.out.Write(data); err != nil {
+	if _, err := r.out.Write(writeBuf.Bytes()); err != nil {
 		r.writeErrors.Add(1)
 	}
+	bufPool.Put(writeBuf)
 
 	if hooks := r.hooks; len(hooks) > 0 {
 		for _, hook := range hooks {
