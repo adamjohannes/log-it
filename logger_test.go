@@ -1574,3 +1574,30 @@ func TestMaxFeatureComposition(t *testing.T) {
 		t.Errorf("hook level: got %v", hookLevel)
 	}
 }
+
+// --- Write error counter ---
+
+type testErrWriter struct{}
+
+func (testErrWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestWriteErrorCounter(t *testing.T) {
+	l := New(testErrWriter{}, DEBUG)
+	l.Info("a", nil)
+	l.Info("b", nil)
+	l.Info("c", nil)
+
+	if l.WriteErrorCount() != 3 {
+		t.Errorf("expected 3 write errors, got %d", l.WriteErrorCount())
+	}
+}
+
+func TestWriteErrorCounterZeroOnSuccess(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Info("ok", nil)
+
+	if l.WriteErrorCount() != 0 {
+		t.Errorf("expected 0 write errors, got %d", l.WriteErrorCount())
+	}
+}

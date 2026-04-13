@@ -67,6 +67,7 @@ type Logger struct {
 	sampler        Sampler
 	fullCallerPath bool
 	eventID        bool
+	writeErrors    atomic.Int64
 }
 
 // New creates a root Logger that writes to out and discards
@@ -94,6 +95,12 @@ func (l *Logger) SetLevel(level Level) {
 // GetLevel atomically returns the current minimum log level.
 func (l *Logger) GetLevel() Level {
 	return Level(l.root().minLevel.Load())
+}
+
+// WriteErrorCount returns the number of times the underlying writer
+// returned an error. Useful for monitoring sink health.
+func (l *Logger) WriteErrorCount() int64 {
+	return l.root().writeErrors.Load()
 }
 
 // Sync flushes any buffered log data to the underlying writer and
@@ -297,7 +304,9 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	defer r.mu.Unlock()
 
 	data = append(data, '\n')
-	_, _ = r.out.Write(data)
+	if _, err := r.out.Write(data); err != nil {
+		r.writeErrors.Add(1)
+	}
 
 	if hooks := r.hooks; len(hooks) > 0 {
 		for _, hook := range hooks {
