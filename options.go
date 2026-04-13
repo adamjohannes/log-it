@@ -105,3 +105,18 @@ func WithFallbackWriter(w io.Writer) Option {
 func WithMiddleware(mw ...Middleware) Option {
 	return func(l *Logger) { l.middleware = append(l.middleware, mw...) }
 }
+
+// WithAutoFormat selects the formatter automatically based on the
+// output writer. If the writer is a terminal (e.g., os.Stderr in a
+// local shell), TextFormatter with colors is used. Otherwise,
+// JSONFormatter is used. This only takes effect if no explicit
+// formatter has been set via WithFormatter.
+func WithAutoFormat() Option {
+	return func(l *Logger) {
+		if f, ok := l.out.(*os.File); ok && isTerminal(f.Fd()) {
+			l.formatter = TextFormatter{}
+		} else {
+			l.formatter = JSONFormatter{}
+		}
+	}
+}

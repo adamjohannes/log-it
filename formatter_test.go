@@ -211,3 +211,17 @@ func TestTextFormatterKeyMap(t *testing.T) {
 		t.Errorf("expected message in output: %s", output)
 	}
 }
+
+func TestAutoFormatNonTerminalUsesJSON(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, INFO, WithAutoFormat())
+	l.Info("auto", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("expected JSON output for non-terminal writer, got: %s", buf.String())
+	}
+	if entry["message"] != "auto" {
+		t.Errorf("expected message=auto, got %v", entry["message"])
+	}
+}
