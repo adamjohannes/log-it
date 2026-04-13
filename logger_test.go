@@ -1601,3 +1601,48 @@ func TestWriteErrorCounterZeroOnSuccess(t *testing.T) {
 		t.Errorf("expected 0 write errors, got %d", l.WriteErrorCount())
 	}
 }
+
+// --- SyncWithTimeout ---
+
+func TestSyncWithTimeoutReturnsImmediately(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Info("test", nil)
+
+	err := l.SyncWithTimeout(time.Second)
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+}
+
+func TestSyncWithTimeoutExpires(t *testing.T) {
+	// Use a writer that blocks forever
+	blockCh := make(chan struct{})
+	bw := &slowSyncWriter{blockCh: blockCh}
+	aw := NewAsyncWriter(bw, 16)
+	l := New(aw, DEBUG)
+
+	l.Info("test", nil)
+
+	err := l.SyncWithTimeout(50 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout message, got %v", err)
+	}
+
+	// Clean up: unblock to prevent goroutine leak
+	close(blockCh)
+}
+
+// slowSyncWriter implements Syncer but blocks on Sync until unblocked.
+type slowSyncWriter struct {
+	blockCh chan struct{}
+}
+
+func (w *slowSyncWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *slowSyncWriter) Sync() error {
+	<-w.blockCh
+	return nil
+}

@@ -3,6 +3,7 @@ package logger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -121,6 +122,20 @@ func (l *Logger) Sync() error {
 		return s.Sync()
 	}
 	return nil
+}
+
+// SyncWithTimeout is like Sync but returns an error if the flush
+// doesn't complete within the given duration. Useful when the
+// underlying sink may be slow or unreachable.
+func (l *Logger) SyncWithTimeout(d time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- l.Sync() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(d):
+		return errors.New("logger: sync timed out")
+	}
 }
 
 // root returns the root logger. Since With() flattens the chain,
