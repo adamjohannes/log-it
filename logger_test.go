@@ -1977,3 +1977,36 @@ func TestSyncReturnsRealErrors(t *testing.T) {
 		t.Error("expected error for real sync failure")
 	}
 }
+
+// --- Stack trace tests ---
+
+func TestStackTracePresentForError(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithStackTrace()}, func(l *Logger) {
+		l.Error("with-stack", nil)
+	})
+	st, ok := entry["stacktrace"].(string)
+	if !ok || st == "" {
+		t.Error("expected stacktrace field for Error level")
+	}
+	if !strings.Contains(st, "logger_test.go") {
+		t.Errorf("expected stacktrace to contain logger_test.go, got: %s", st[:min(100, len(st))])
+	}
+}
+
+func TestStackTraceAbsentForInfo(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithStackTrace()}, func(l *Logger) {
+		l.Info("no-stack", nil)
+	})
+	if _, exists := entry["stacktrace"]; exists {
+		t.Error("expected no stacktrace for Info level")
+	}
+}
+
+func TestStackTraceAbsentWhenDisabled(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Error("no-stack-opt", nil)
+	})
+	if _, exists := entry["stacktrace"]; exists {
+		t.Error("expected no stacktrace when WithStackTrace not set")
+	}
+}

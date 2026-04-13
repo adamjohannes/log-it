@@ -72,6 +72,7 @@ type Logger struct {
 	caller         bool
 	fullCallerPath bool
 	eventID        bool
+	stackTrace     bool
 	writeErrors    atomic.Int64
 	fallbackWriter io.Writer
 }
@@ -203,7 +204,7 @@ func (l *Logger) WithContextExtractor(fn ContextExtractor) *Logger {
 var reservedKeys = map[string]struct{}{
 	"time": {}, "level": {}, "message": {}, "file": {},
 	"service": {}, "version": {}, "env": {}, "host": {},
-	"event_id": {},
+	"event_id": {}, "stacktrace": {},
 }
 
 // eventCounter provides unique sequence numbers for event IDs.
@@ -214,6 +215,31 @@ func generateEventID() string {
 	ts := time.Now().UnixNano()
 	seq := eventCounter.Add(1)
 	return fmt.Sprintf("%x-%x", ts, seq)
+}
+
+// captureStackTrace captures a stack trace starting at the given skip depth.
+func captureStackTrace(skip int) string {
+	var pcs [32]uintptr
+	n := runtime.Callers(skip, pcs[:])
+	if n == 0 {
+		return ""
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	var b strings.Builder
+	for {
+		frame, more := frames.Next()
+		if frame.Function == "" {
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%s\n\t%s:%d", frame.Function, frame.File, frame.Line)
+		if !more {
+			break
+		}
+	}
+	return b.String()
 }
 
 // resolveLogValuers scans fields for values implementing slog.LogValuer
@@ -366,6 +392,10 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		} else {
 			entry[k] = v
 		}
+	}
+
+	if r.stackTrace && level >= ERROR {
+		entry["stacktrace"] = captureStackTrace(4)
 	}
 
 	// Run middleware chain; nil return means drop the entry

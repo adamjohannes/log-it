@@ -90,6 +90,13 @@ func WithEventID() Option {
 	return func(l *Logger) { l.eventID = true }
 }
 
+// WithStackTrace enables automatic stack trace capture for log entries
+// at ERROR level and above. The stack is stored in a "stacktrace"
+// field. Disabled by default because runtime.Callers costs ~5μs.
+func WithStackTrace() Option {
+	return func(l *Logger) { l.stackTrace = true }
+}
+
 // WithFallbackWriter sets a fallback destination for log entries when
 // the primary writer fails. This prevents log loss during incidents
 // where the primary sink (file, network) is unavailable. The write
