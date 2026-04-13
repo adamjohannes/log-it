@@ -68,6 +68,7 @@ type Logger struct {
 	hooks          []Hook
 	formatter      Formatter
 	sampler        Sampler
+	middleware     []Middleware
 	caller         bool
 	fullCallerPath bool
 	eventID        bool
@@ -347,6 +348,14 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 			entry["fields."+k] = v
 		} else {
 			entry[k] = v
+		}
+	}
+
+	// Run middleware chain; nil return means drop the entry
+	for _, mw := range r.middleware {
+		entry = mw(entry)
+		if entry == nil {
+			return
 		}
 	}
 

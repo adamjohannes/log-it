@@ -1861,3 +1861,89 @@ func TestFallbackWriterBothFail(t *testing.T) {
 		t.Errorf("expected writeErrors=1, got %d", l.WriteErrorCount())
 	}
 }
+
+// --- Middleware tests ---
+
+func TestMiddlewareEnrichesEntry(t *testing.T) {
+	addHostname := func(entry map[string]any) map[string]any {
+		entry["hostname"] = "server-1"
+		return entry
+	}
+	entry := captureLogWithOpts([]Option{WithMiddleware(addHostname)}, func(l *Logger) {
+		l.Info("enriched", nil)
+	})
+	if entry["hostname"] != "server-1" {
+		t.Errorf("expected hostname=server-1, got %v", entry["hostname"])
+	}
+}
+
+func TestMiddlewareFiltersEntry(t *testing.T) {
+	dropHealthChecks := func(entry map[string]any) map[string]any {
+		if msg, _ := entry["message"].(string); msg == "health check" {
+			return nil
+		}
+		return entry
+	}
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithMiddleware(dropHealthChecks))
+	l.Info("health check", nil)
+	l.Info("real request", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (health check dropped), got %d", len(entries))
+	}
+	if entries[0]["message"] != "real request" {
+		t.Errorf("expected real request, got %v", entries[0]["message"])
+	}
+}
+
+func TestMiddlewareChainRunsInOrder(t *testing.T) {
+	first := func(entry map[string]any) map[string]any {
+		entry["step"] = "first"
+		return entry
+	}
+	second := func(entry map[string]any) map[string]any {
+		entry["step"] = entry["step"].(string) + ",second"
+		return entry
+	}
+	entry := captureLogWithOpts([]Option{WithMiddleware(first, second)}, func(l *Logger) {
+		l.Info("chained", nil)
+	})
+	if entry["step"] != "first,second" {
+		t.Errorf("expected step=first,second, got %v", entry["step"])
+	}
+}
+
+func TestMiddlewareNilReturnDropsEntry(t *testing.T) {
+	dropAll := func(entry map[string]any) map[string]any { return nil }
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithMiddleware(dropAll))
+	l.Info("should be dropped", nil)
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no output, got: %s", buf.String())
+	}
+}
+
+func TestMiddlewareInheritedByChild(t *testing.T) {
+	addTag := func(entry map[string]any) map[string]any {
+		entry["env"] = "test"
+		return entry
+	}
+
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG, WithMiddleware(addTag))
+	child := root.With(map[string]any{"component": "api"})
+	child.Info("from-child", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["env"] != "test" {
+		t.Errorf("expected middleware to run on child, got env=%v", entry["env"])
+	}
+}

@@ -97,3 +97,11 @@ func WithEventID() Option {
 func WithFallbackWriter(w io.Writer) Option {
 	return func(l *Logger) { l.fallbackWriter = w }
 }
+
+// WithMiddleware registers middleware functions that transform or filter
+// log entries before they are written. Middleware runs in order after
+// the entry is fully assembled (core keys, identity, fields, error
+// enrichment). Return nil from a middleware to drop the entry.
+func WithMiddleware(mw ...Middleware) Option {
+	return func(l *Logger) { l.middleware = append(l.middleware, mw...) }
+}
