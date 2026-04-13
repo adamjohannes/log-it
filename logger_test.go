@@ -65,10 +65,15 @@ func TestFlattenFieldsAtTopLevel(t *testing.T) {
 	}
 
 	// Core keys should be present
-	for _, key := range []string{"time", "level", "message", "file"} {
+	for _, key := range []string{"time", "level", "message"} {
 		if _, exists := entry[key]; !exists {
 			t.Errorf("expected core key %q to be present", key)
 		}
+	}
+
+	// "file" should NOT be present by default (caller capture is opt-in)
+	if _, exists := entry["file"]; exists {
+		t.Error("expected no 'file' key by default (caller is opt-in)")
 	}
 }
 
@@ -99,9 +104,9 @@ func TestFlattenNoFields(t *testing.T) {
 		l.Info("bare", nil)
 	})
 
-	// Should have exactly 4 core keys
-	if len(entry) != 4 {
-		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	// Should have exactly 3 core keys (time, level, message — no file without WithCaller)
+	if len(entry) != 3 {
+		t.Errorf("expected 3 keys, got %d: %v", len(entry), entry)
 	}
 }
 
@@ -110,8 +115,8 @@ func TestFlattenEmptyFields(t *testing.T) {
 		l.Info("bare", map[string]any{})
 	})
 
-	if len(entry) != 4 {
-		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	if len(entry) != 3 {
+		t.Errorf("expected 3 keys, got %d: %v", len(entry), entry)
 	}
 }
 
@@ -159,7 +164,7 @@ func TestFlattenWithContextExtractor(t *testing.T) {
 }
 
 func TestCoreKeysPresent(t *testing.T) {
-	entry := captureLog(func(l *Logger) {
+	entry := captureLogWithOpts([]Option{WithCaller()}, func(l *Logger) {
 		l.Debug("dbg", nil)
 	})
 
@@ -436,10 +441,62 @@ func TestTraceLevelString(t *testing.T) {
 	}
 }
 
+// --- Caller capture tests ---
+
+func TestCallerDisabledByDefault(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Info("no-caller", nil)
+	})
+	if _, exists := entry["file"]; exists {
+		t.Error("expected no 'file' key when caller capture is disabled")
+	}
+}
+
+func TestCallerEnabledWithOption(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithCaller()}, func(l *Logger) {
+		l.Info("with-caller", nil)
+	})
+	file, ok := entry["file"].(string)
+	if !ok || file == "" {
+		t.Errorf("expected file to be present with WithCaller(), got %v", entry["file"])
+	}
+	if !strings.Contains(file, "logger_test.go") {
+		t.Errorf("expected file to contain logger_test.go, got %v", file)
+	}
+}
+
+func TestFullCallerPathImpliesCaller(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithFullCallerPath()}, func(l *Logger) {
+		l.Info("implied-caller", nil)
+	})
+	file, ok := entry["file"].(string)
+	if !ok || file == "" {
+		t.Error("expected WithFullCallerPath to imply caller capture")
+	}
+	if !strings.Contains(file, "/") {
+		t.Errorf("expected full path, got %v", file)
+	}
+}
+
+func TestCallerInheritedByChild(t *testing.T) {
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG, WithCaller())
+	child := root.With(map[string]any{"component": "test"})
+	child.Info("from-child", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := entry["file"].(string); !ok {
+		t.Error("expected child to inherit caller capture from root")
+	}
+}
+
 // --- Full caller path tests ---
 
 func TestDefaultCallerIsBasename(t *testing.T) {
-	entry := captureLog(func(l *Logger) {
+	entry := captureLogWithOpts([]Option{WithCaller()}, func(l *Logger) {
 		l.Info("test", nil)
 	})
 	file, _ := entry["file"].(string)
@@ -742,9 +799,9 @@ func TestFormattedMethodsHaveNoFields(t *testing.T) {
 		l.Infof("hello %s", "world")
 	})
 
-	// Should have exactly 4 core keys, no user fields
-	if len(entry) != 4 {
-		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	// Should have exactly 3 core keys, no user fields (no file without WithCaller)
+	if len(entry) != 3 {
+		t.Errorf("expected 3 keys, got %d: %v", len(entry), entry)
 	}
 }
 
@@ -952,19 +1009,24 @@ func TestJsonMarshalFailure(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG)
 
-	// func() is not JSON-marshalable
+	// func() is not natively JSON-marshalable; the custom encoder
+	// falls back to fmt.Sprintf for unknown types, producing a valid
+	// string representation instead of an error.
 	l.Info("bad-field", map[string]any{"fn": func() {}})
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
 		t.Fatal(err)
 	}
-	if entry["level"] != "ERROR" {
-		t.Errorf("expected fallback level=ERROR, got %v", entry["level"])
+	if entry["level"] != "INFO" {
+		t.Errorf("expected level=INFO, got %v", entry["level"])
 	}
-	msg, _ := entry["message"].(string)
-	if !strings.Contains(msg, "failed to marshal log entry to json") {
-		t.Errorf("expected English fallback message, got %v", msg)
+	if entry["message"] != "bad-field" {
+		t.Errorf("expected message=bad-field, got %v", entry["message"])
+	}
+	// The function value should be encoded as a string
+	if _, ok := entry["fn"].(string); !ok {
+		t.Errorf("expected fn to be a string fallback, got %T", entry["fn"])
 	}
 }
 
@@ -972,13 +1034,13 @@ func TestJsonMarshalFallbackNoInjection(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG)
 
-	// func() triggers marshal failure; the error message from json.Marshal
-	// may contain quotes. Verify the fallback is still valid JSON.
+	// func() triggers fallback encoding to string representation.
+	// Verify the output is still valid JSON (no injection via the string).
 	l.Info("inject-test", map[string]any{"fn": func() {}})
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("fallback JSON is invalid (possible injection): %v\nraw: %s", err, buf.String())
+		t.Fatalf("output JSON is invalid (possible injection): %v\nraw: %s", err, buf.String())
 	}
 }
 
@@ -1754,4 +1816,197 @@ func TestNopSafeForAllMethods(t *testing.T) {
 	_ = l.Sync()
 
 	// If we got here, all methods are safe on Nop.
+}
+
+// --- Fallback writer tests ---
+
+func TestFallbackWriterReceivesEntryOnPrimaryFailure(t *testing.T) {
+	primary := &testErrWriter{}
+	var fallback bytes.Buffer
+	l := New(primary, INFO, WithFallbackWriter(&fallback))
+
+	l.Info("rescued", map[string]any{"key": "val"})
+
+	if fallback.Len() == 0 {
+		t.Fatal("expected fallback to receive the log entry")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimRight(fallback.Bytes(), "\n"), &entry); err != nil {
+		t.Fatalf("fallback output not valid JSON: %v", err)
+	}
+	if entry["message"] != "rescued" {
+		t.Errorf("expected message=rescued, got %v", entry["message"])
+	}
+}
+
+func TestFallbackWriterNilIsNoop(t *testing.T) {
+	primary := &testErrWriter{}
+	l := New(primary, INFO)
+
+	l.Info("dropped", nil)
+
+	if l.WriteErrorCount() != 1 {
+		t.Errorf("expected writeErrors=1, got %d", l.WriteErrorCount())
+	}
+}
+
+func TestFallbackWriterBothFail(t *testing.T) {
+	primary := &testErrWriter{}
+	fallback := &testErrWriter{}
+	l := New(primary, INFO, WithFallbackWriter(fallback))
+
+	l.Info("lost", nil) // should not panic
+
+	if l.WriteErrorCount() != 1 {
+		t.Errorf("expected writeErrors=1, got %d", l.WriteErrorCount())
+	}
+}
+
+// --- Middleware tests ---
+
+func TestMiddlewareEnrichesEntry(t *testing.T) {
+	addHostname := func(entry map[string]any) map[string]any {
+		entry["hostname"] = "server-1"
+		return entry
+	}
+	entry := captureLogWithOpts([]Option{WithMiddleware(addHostname)}, func(l *Logger) {
+		l.Info("enriched", nil)
+	})
+	if entry["hostname"] != "server-1" {
+		t.Errorf("expected hostname=server-1, got %v", entry["hostname"])
+	}
+}
+
+func TestMiddlewareFiltersEntry(t *testing.T) {
+	dropHealthChecks := func(entry map[string]any) map[string]any {
+		if msg, _ := entry["message"].(string); msg == "health check" {
+			return nil
+		}
+		return entry
+	}
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithMiddleware(dropHealthChecks))
+	l.Info("health check", nil)
+	l.Info("real request", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry (health check dropped), got %d", len(entries))
+	}
+	if entries[0]["message"] != "real request" {
+		t.Errorf("expected real request, got %v", entries[0]["message"])
+	}
+}
+
+func TestMiddlewareChainRunsInOrder(t *testing.T) {
+	first := func(entry map[string]any) map[string]any {
+		entry["step"] = "first"
+		return entry
+	}
+	second := func(entry map[string]any) map[string]any {
+		entry["step"] = entry["step"].(string) + ",second"
+		return entry
+	}
+	entry := captureLogWithOpts([]Option{WithMiddleware(first, second)}, func(l *Logger) {
+		l.Info("chained", nil)
+	})
+	if entry["step"] != "first,second" {
+		t.Errorf("expected step=first,second, got %v", entry["step"])
+	}
+}
+
+func TestMiddlewareNilReturnDropsEntry(t *testing.T) {
+	dropAll := func(entry map[string]any) map[string]any { return nil }
+
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithMiddleware(dropAll))
+	l.Info("should be dropped", nil)
+
+	if buf.Len() != 0 {
+		t.Errorf("expected no output, got: %s", buf.String())
+	}
+}
+
+func TestMiddlewareInheritedByChild(t *testing.T) {
+	addTag := func(entry map[string]any) map[string]any {
+		entry["env"] = "test"
+		return entry
+	}
+
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG, WithMiddleware(addTag))
+	child := root.With(map[string]any{"component": "api"})
+	child.Info("from-child", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["env"] != "test" {
+		t.Errorf("expected middleware to run on child, got env=%v", entry["env"])
+	}
+}
+
+// --- Benign sync error tests ---
+
+type benignSyncer struct {
+	errMsg string
+}
+
+func (s *benignSyncer) Write(p []byte) (int, error) { return len(p), nil }
+func (s *benignSyncer) Sync() error                 { return errors.New(s.errMsg) }
+
+func TestSyncIgnoresInvalidArgumentError(t *testing.T) {
+	l := New(&benignSyncer{errMsg: "sync /dev/stdout: invalid argument"}, INFO)
+	if err := l.Sync(); err != nil {
+		t.Errorf("expected nil error for benign sync, got %v", err)
+	}
+}
+
+func TestSyncIgnoresInappropriateIoctlError(t *testing.T) {
+	l := New(&benignSyncer{errMsg: "inappropriate ioctl for device"}, INFO)
+	if err := l.Sync(); err != nil {
+		t.Errorf("expected nil error for benign sync, got %v", err)
+	}
+}
+
+func TestSyncReturnsRealErrors(t *testing.T) {
+	l := New(&benignSyncer{errMsg: "disk full"}, INFO)
+	if err := l.Sync(); err == nil {
+		t.Error("expected error for real sync failure")
+	}
+}
+
+// --- Stack trace tests ---
+
+func TestStackTracePresentForError(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithStackTrace()}, func(l *Logger) {
+		l.Error("with-stack", nil)
+	})
+	st, ok := entry["stacktrace"].(string)
+	if !ok || st == "" {
+		t.Error("expected stacktrace field for Error level")
+	}
+	if !strings.Contains(st, "logger_test.go") {
+		t.Errorf("expected stacktrace to contain logger_test.go, got: %s", st[:min(100, len(st))])
+	}
+}
+
+func TestStackTraceAbsentForInfo(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithStackTrace()}, func(l *Logger) {
+		l.Info("no-stack", nil)
+	})
+	if _, exists := entry["stacktrace"]; exists {
+		t.Error("expected no stacktrace for Info level")
+	}
+}
+
+func TestStackTraceAbsentWhenDisabled(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Error("no-stack-opt", nil)
+	})
+	if _, exists := entry["stacktrace"]; exists {
+		t.Error("expected no stacktrace when WithStackTrace not set")
+	}
 }

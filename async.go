@@ -96,3 +96,9 @@ func (aw *AsyncWriter) Sync() error {
 func (aw *AsyncWriter) DroppedCount() int64 {
 	return aw.dropCnt.Load()
 }
+
+// Unwrap returns the underlying destination writer. This enables
+// WithAutoFormat to detect terminal writers through wrapper layers.
+func (aw *AsyncWriter) Unwrap() io.Writer {
+	return aw.dest
+}

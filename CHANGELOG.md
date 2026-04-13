@@ -5,7 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-04-13
+
+### Breaking
+
+- **Caller capture is now opt-in.** The `"file"` field is no longer included in log entries by default. Use `WithCaller()` to re-enable it, or `WithFullCallerPath()` which implies `WithCaller()`. This saves ~300–600ns per log call on the hot path.
+
+### Added
+
+- `WithCaller()` option to opt in to caller file:line capture
+- `WithStackTrace()` option for stack trace capture on ERROR/FATAL entries
+- `WithFallbackWriter(w)` option for resilient logging when the primary sink fails
+- `WithMiddleware(mw...)` option for pre-write entry transformation and filtering
+- `WithRedactFields(fields...)` and `WithRedactFieldsFunc(replacement, fields...)` for field-name-based PII redaction
+- `WithAutoFormat()` option for terminal-aware formatter selection (colored text for TTYs, JSON otherwise)
+- `LogfmtFormatter` for Grafana Loki / logfmt-compatible output; recognized by `WithEnvConfig()` via `LOG_FORMAT=logfmt`
+- `FilteredWriter` for per-sink level filtering; composes with `FanOutWriter`
+- `WithLevelKey(key)` option on `FilteredWriter` for compatibility with KeyMap remapping
+- `Interface` type in `iface.go` for dependency injection and test doubles; `*Logger` satisfies it implicitly
+- `logtest` subpackage with `TestHandler`, `NewTestLogger(t)`, `NewTLogger(t)`, `AssertLogged`, `AssertNotLogged`
+- `DatadogKeyMap` and `ELKKeyMap` cloud provider presets alongside existing `GCPKeyMap`
+- `Unwrap()` method on `AsyncWriter`, `FanOutWriter`, and `FilteredWriter` for terminal detection through wrapper layers
+- `Middleware` type for pre-write entry interception
+- `SetDefault()` and `ReplaceDefault()` now automatically call `slog.SetDefault()` for seamless slog interop
+- `scripts/pre-flight.sh` for local CI validation with cross-compilation checks
+
+### Changed
+
+- `JSONFormatter` uses a hand-rolled encoder (`strconv.Append*`, sorted keys) instead of `encoding/json.Marshal` — significantly faster with fewer allocations
+- `TextFormatter` and `writeEntry` use `sync.Pool` buffer pooling to reduce allocations
+- `TextFormatter` now strips ANSI escape sequences from field values and messages (security hardening)
+- `WithFullCallerPath()` now implies `WithCaller()` — no separate call needed
+- Unmarshalable field values (e.g., `func()`) are now encoded as their string representation instead of causing a fallback error entry
+
+### Fixed
+
+- `Sync()` now ignores known benign errors ("invalid argument", "inappropriate ioctl for device") from non-file descriptors
+- `FilteredWriter` works correctly with KeyMap remapping via `WithLevelKey`
+- `WithAutoFormat()` detects terminals through wrapped writers (`AsyncWriter`, `FanOutWriter`, `FilteredWriter`)
+- Terminal detection uses platform-specific ioctl (`TIOCGETA` on BSD, `TCGETS` on Linux) instead of BSD-only constant that broke Linux builds
 
 ## [0.2.0] - 2026-04-12
 
@@ -60,6 +98,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - JSON injection in marshal-failure fallback path (now uses `json.Marshal`)
 - Portuguese fallback error message replaced with English
 
-[Unreleased]: https://github.com/adamjohannes/log-it/compare/v0.2.0...HEAD
+[0.3.0]: https://github.com/adamjohannes/log-it/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/adamjohannes/log-it/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamjohannes/log-it/releases/tag/v0.1.0

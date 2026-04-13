@@ -156,6 +156,41 @@ func TestTextFormatterSanitizesMessage(t *testing.T) {
 	}
 }
 
+func TestTextFormatterStripsANSIFromValues(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	l.Info("test", map[string]any{"injected": "\033[31mred text\033[0m"})
+
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Errorf("expected ANSI codes to be stripped, got: %s", output)
+	}
+	if !strings.Contains(output, "red text") {
+		t.Errorf("expected text content preserved after ANSI strip: %s", output)
+	}
+}
+
+func TestTextFormatterStripsANSIFromMessage(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	l.Info("\033[1mbold message\033[0m", nil)
+
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Errorf("expected ANSI codes to be stripped from message, got: %s", output)
+	}
+	if !strings.Contains(output, "bold message") {
+		t.Errorf("expected message text preserved: %s", output)
+	}
+}
+
+func TestStripANSINoEscapePassthrough(t *testing.T) {
+	input := "no escape here"
+	if got := stripANSI(input); got != input {
+		t.Errorf("expected passthrough, got %q", got)
+	}
+}
+
 // --- KeyMap remapping tests ---
 
 func TestJSONFormatterKeyMap(t *testing.T) {
@@ -197,6 +232,40 @@ func TestGCPKeyMapPreset(t *testing.T) {
 	}
 }
 
+func TestDatadogKeyMapPreset(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(JSONFormatter{KeyMap: DatadogKeyMap}))
+	l.Info("dd-test", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["status"] != "INFO" {
+		t.Errorf("expected status=INFO, got %v", entry["status"])
+	}
+	if _, exists := entry["level"]; exists {
+		t.Error("expected 'level' key to be remapped to 'status'")
+	}
+}
+
+func TestELKKeyMapPreset(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(JSONFormatter{KeyMap: ELKKeyMap}))
+	l.Info("elk-test", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := entry["@timestamp"]; !exists {
+		t.Error("expected @timestamp key from ELKKeyMap")
+	}
+	if entry["log.level"] != "INFO" {
+		t.Errorf("expected log.level=INFO, got %v", entry["log.level"])
+	}
+}
+
 func TestTextFormatterKeyMap(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG, WithFormatter(TextFormatter{
@@ -209,5 +278,131 @@ func TestTextFormatterKeyMap(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "test") {
 		t.Errorf("expected message in output: %s", output)
+	}
+}
+
+func TestAutoFormatNonTerminalUsesJSON(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, INFO, WithAutoFormat())
+	l.Info("auto", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatalf("expected JSON output for non-terminal writer, got: %s", buf.String())
+	}
+	if entry["message"] != "auto" {
+		t.Errorf("expected message=auto, got %v", entry["message"])
+	}
+}
+
+func TestAutoFormatUnwrapsAsyncWriter(t *testing.T) {
+	// AsyncWriter around a bytes.Buffer is still not a terminal
+	var buf bytes.Buffer
+	aw := NewAsyncWriter(&buf, 64)
+	l := New(aw, INFO, WithAutoFormat())
+	l.Info("unwrapped", nil)
+	_ = l.Sync()
+
+	// Should be JSON (Buffer is not a terminal)
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0]["message"] != "unwrapped" {
+		t.Errorf("expected message=unwrapped, got %v", entries[0]["message"])
+	}
+}
+
+// --- Logfmt formatter tests ---
+
+func TestLogfmtFormatterBasic(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("hello", map[string]any{"status": 200, "user": "alice"})
+
+	output := buf.String()
+	// Should contain key=value pairs
+	if !strings.Contains(output, "level=INFO") {
+		t.Errorf("expected level=INFO, got: %s", output)
+	}
+	if !strings.Contains(output, "message=hello") {
+		t.Errorf("expected message=hello, got: %s", output)
+	}
+	if !strings.Contains(output, "status=200") {
+		t.Errorf("expected status=200, got: %s", output)
+	}
+	if !strings.Contains(output, "user=alice") {
+		t.Errorf("expected user=alice, got: %s", output)
+	}
+	// Should be a single line (entry + newline from writeEntry)
+	lines := strings.Count(output, "\n")
+	if lines != 1 {
+		t.Errorf("expected 1 line, got %d: %s", lines, output)
+	}
+}
+
+func TestLogfmtFormatterQuotesSpaces(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("spaced message", map[string]any{"path": "/api/v1/users"})
+
+	output := buf.String()
+	// Message with spaces should be quoted
+	if !strings.Contains(output, `message="spaced message"`) {
+		t.Errorf("expected quoted message, got: %s", output)
+	}
+	// Path without spaces should not be quoted
+	if !strings.Contains(output, "path=/api/v1/users") {
+		t.Errorf("expected unquoted path, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterQuotesEmptyValue(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("test", map[string]any{"empty": ""})
+
+	output := buf.String()
+	if !strings.Contains(output, `empty=""`) {
+		t.Errorf("expected quoted empty value, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterEscapesQuotes(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("test", map[string]any{"val": `say "hi"`})
+
+	output := buf.String()
+	if !strings.Contains(output, `val="say \"hi\""`) {
+		t.Errorf("expected escaped quotes, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterKeyMap(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{
+		KeyMap: map[string]string{"level": "severity"},
+	}))
+	l.Info("remapped", nil)
+
+	output := buf.String()
+	if !strings.Contains(output, "severity=INFO") {
+		t.Errorf("expected severity=INFO, got: %s", output)
+	}
+	if strings.Contains(output, "level=") {
+		t.Errorf("expected level key to be remapped, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterCoreKeysFirst(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("order", map[string]any{"zebra": 1, "alpha": 2})
+
+	output := strings.TrimRight(buf.String(), "\n")
+	// time should come first, then level, then message
+	if !strings.HasPrefix(output, "time=") {
+		t.Errorf("expected output to start with time=, got: %s", output)
 	}
 }

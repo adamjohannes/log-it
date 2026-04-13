@@ -2,11 +2,16 @@ package logger
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 )
+
+// bufPool provides reusable byte buffers for formatters and the write path.
+var bufPool = sync.Pool{
+	New: func() any { return bytes.NewBuffer(make([]byte, 0, 256)) },
+}
 
 // Formatter serializes a log entry map into bytes.
 type Formatter interface {
@@ -22,11 +27,21 @@ type JSONFormatter struct {
 }
 
 // Format marshals the entry map to JSON, applying key remapping if configured.
+// Uses a hand-rolled encoder for performance; falls back to encoding/json
+// for types it cannot handle directly.
 func (f JSONFormatter) Format(entry map[string]any) ([]byte, error) {
 	if len(f.KeyMap) > 0 {
 		entry = applyKeyMap(entry, f.KeyMap)
 	}
-	return json.Marshal(entry)
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	result := appendJSONEntry(buf.Bytes(), entry)
+	// result may have grown past buf's backing array, so copy
+	out := make([]byte, len(result))
+	copy(out, result)
+	buf.Reset()
+	bufPool.Put(buf)
+	return out, nil
 }
 
 // TextFormatter serializes entries as human-readable text, suitable
@@ -46,7 +61,9 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 		entry = applyKeyMap(entry, f.KeyMap)
 	}
 
-	var buf bytes.Buffer
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
 
 	ts, _ := entry["time"].(string)
 	level, _ := entry["level"].(string)
@@ -58,7 +75,7 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 		displayLevel = colorize(level)
 	}
 
-	fmt.Fprintf(&buf, "%s %-7s [%s] %s", ts, displayLevel, file, sanitizeText(msg))
+	fmt.Fprintf(buf, "%s %-7s [%s] %s", ts, displayLevel, file, sanitizeText(msg))
 
 	// Collect extra keys in sorted order for deterministic output
 	coreKeys := map[string]struct{}{
@@ -73,10 +90,13 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 	sort.Strings(extraKeys)
 
 	for _, k := range extraKeys {
-		fmt.Fprintf(&buf, "  %s=%s", k, sanitizeText(fmt.Sprintf("%v", entry[k])))
+		fmt.Fprintf(buf, "  %s=%s", k, sanitizeText(fmt.Sprintf("%v", entry[k])))
 	}
 
-	return buf.Bytes(), nil
+	// Copy result before returning buffer to pool
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
 }
 
 // colorize wraps a level string with ANSI color codes.
@@ -100,11 +120,45 @@ func colorize(level string) string {
 }
 
 // sanitizeText escapes control characters that could create fake log
-// lines or corrupt text output (log injection prevention).
+// lines or corrupt text output (log injection prevention), and strips
+// ANSI escape sequences that could alter terminal rendering.
 func sanitizeText(s string) string {
+	s = stripANSI(s)
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	return s
+}
+
+// stripANSI removes ANSI escape sequences (ESC[...X) from s.
+// Uses a simple state machine rather than regexp to avoid the import.
+func stripANSI(s string) string {
+	// Fast path: no ESC byte means no ANSI sequences
+	if !strings.Contains(s, "\033") {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip ESC[ and everything up to the terminating letter
+			i += 2
+			for i < len(s) && !isANSITerminator(s[i]) {
+				i++
+			}
+			if i < len(s) {
+				i++ // skip the terminator
+			}
+		} else {
+			b = append(b, s[i])
+			i++
+		}
+	}
+	return string(b)
+}
+
+// isANSITerminator returns true if b is a valid ANSI CSI final byte.
+func isANSITerminator(b byte) bool {
+	return b >= 0x40 && b <= 0x7E
 }
 
 // applyKeyMap renames keys in the entry map according to the provided mapping.
@@ -120,8 +174,106 @@ func applyKeyMap(entry map[string]any, keyMap map[string]string) map[string]any 
 	return remapped
 }
 
+// LogfmtFormatter serializes entries as logfmt key=value pairs.
+// Compatible with Grafana Loki, Heroku, and other logfmt-aware systems.
+//
+// Output format:
+//
+//	time=2026-04-12T14:32:07Z level=INFO message="request handled" status=200 user_id=42
+type LogfmtFormatter struct {
+	// KeyMap remaps core field names before serialization.
+	KeyMap map[string]string
+}
+
+// Format renders the entry as a single line of logfmt key=value pairs.
+// Values containing spaces, quotes, or control characters are quoted.
+func (f LogfmtFormatter) Format(entry map[string]any) ([]byte, error) {
+	if len(f.KeyMap) > 0 {
+		entry = applyKeyMap(entry, f.KeyMap)
+	}
+
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
+	// Write core keys first in a stable order, then remaining sorted
+	coreOrder := []string{"time", "level", "message", "file"}
+	written := make(map[string]struct{}, len(coreOrder))
+
+	for _, k := range coreOrder {
+		if v, ok := entry[k]; ok {
+			if buf.Len() > 0 {
+				buf.WriteByte(' ')
+			}
+			appendLogfmtPair(buf, k, v)
+			written[k] = struct{}{}
+		}
+	}
+
+	var extraKeys []string
+	for k := range entry {
+		if _, ok := written[k]; !ok {
+			extraKeys = append(extraKeys, k)
+		}
+	}
+	sort.Strings(extraKeys)
+
+	for _, k := range extraKeys {
+		if buf.Len() > 0 {
+			buf.WriteByte(' ')
+		}
+		appendLogfmtPair(buf, k, entry[k])
+	}
+
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
+}
+
+// appendLogfmtPair writes key=value to buf, quoting the value if needed.
+func appendLogfmtPair(buf *bytes.Buffer, key string, val any) {
+	buf.WriteString(key)
+	buf.WriteByte('=')
+
+	s := fmt.Sprintf("%v", val)
+	if needsLogfmtQuoting(s) {
+		buf.WriteByte('"')
+		buf.WriteString(strings.ReplaceAll(s, `"`, `\"`))
+		buf.WriteByte('"')
+	} else {
+		buf.WriteString(s)
+	}
+}
+
+// needsLogfmtQuoting reports whether s must be quoted in logfmt.
+func needsLogfmtQuoting(s string) bool {
+	if s == "" {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c == '"' || c == '=' || c == '\\' {
+			return true
+		}
+	}
+	return false
+}
+
 // GCPKeyMap is a key remapping preset for Google Cloud Logging compatibility.
 var GCPKeyMap = map[string]string{
 	"level":   "severity",
 	"message": "textPayload",
+}
+
+// DatadogKeyMap is a key remapping preset for Datadog Log Management.
+// Datadog expects "status" for the severity level.
+var DatadogKeyMap = map[string]string{
+	"level": "status",
+}
+
+// ELKKeyMap is a key remapping preset for Elastic/ELK stack compatibility.
+// Elasticsearch expects "@timestamp" and "log.level".
+var ELKKeyMap = map[string]string{
+	"time":  "@timestamp",
+	"level": "log.level",
 }

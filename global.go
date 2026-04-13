@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"log/slog"
 	"os"
 	"sync/atomic"
 )
@@ -17,13 +18,18 @@ func Default() *Logger {
 }
 
 // SetDefault sets the global default Logger returned by Default()
-// and FromContext() when no logger is in the context.
+// and FromContext() when no logger is in the context. It also sets
+// slog.Default() so that code using the standard library's slog
+// package is routed through this logger.
 func SetDefault(l *Logger) {
 	defaultLogger.Store(l)
+	slog.SetDefault(slog.New(NewSlogHandler(l)))
 }
 
 // ReplaceDefault sets a new default Logger and returns the previous one.
-// Returns nil if no default was previously set.
+// Returns nil if no default was previously set. Also updates slog.Default().
 func ReplaceDefault(l *Logger) *Logger {
-	return defaultLogger.Swap(l)
+	prev := defaultLogger.Swap(l)
+	slog.SetDefault(slog.New(NewSlogHandler(l)))
+	return prev
 }

@@ -11,7 +11,7 @@ import (
 //
 // Supported values:
 //   - LOG_LEVEL: trace, debug, info, warning, error, fatal (case-insensitive)
-//   - LOG_FORMAT: json, text (case-insensitive)
+//   - LOG_FORMAT: json, text, logfmt (case-insensitive)
 func WithEnvConfig() Option {
 	return func(l *Logger) {
 		if lvl := os.Getenv("LOG_LEVEL"); lvl != "" {
@@ -25,6 +25,8 @@ func WithEnvConfig() Option {
 				l.formatter = JSONFormatter{}
 			case "text":
 				l.formatter = TextFormatter{}
+			case "logfmt":
+				l.formatter = LogfmtFormatter{}
 			}
 		}
 	}

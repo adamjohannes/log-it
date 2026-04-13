@@ -1,6 +1,9 @@
 package logger
 
-import "os"
+import (
+	"io"
+	"os"
+)
 
 // Option configures a root Logger.
 type Option func(*Logger)
@@ -64,14 +67,82 @@ func WithSampler(s Sampler) Option {
 	return func(l *Logger) { l.sampler = s }
 }
 
+// WithCaller enables caller information (file and line number) in the
+// "file" field of every log entry. Disabled by default because
+// runtime.Caller has a measurable cost (~300–600ns per call).
+func WithCaller() Option {
+	return func(l *Logger) { l.caller = true }
+}
+
 // WithFullCallerPath includes the full file path (including package
 // directory) in the "file" field instead of just the basename.
+// Implies WithCaller().
 func WithFullCallerPath() Option {
-	return func(l *Logger) { l.fullCallerPath = true }
+	return func(l *Logger) {
+		l.caller = true
+		l.fullCallerPath = true
+	}
 }
 
 // WithEventID enables automatic generation of a unique event_id
 // for every log entry, useful for deduplication in log pipelines.
 func WithEventID() Option {
 	return func(l *Logger) { l.eventID = true }
+}
+
+// WithStackTrace enables automatic stack trace capture for log entries
+// at ERROR level and above. The stack is stored in a "stacktrace"
+// field. Disabled by default because runtime.Callers costs ~5μs.
+func WithStackTrace() Option {
+	return func(l *Logger) { l.stackTrace = true }
+}
+
+// WithFallbackWriter sets a fallback destination for log entries when
+// the primary writer fails. This prevents log loss during incidents
+// where the primary sink (file, network) is unavailable. The write
+// error counter is still incremented on primary failure.
+func WithFallbackWriter(w io.Writer) Option {
+	return func(l *Logger) { l.fallbackWriter = w }
+}
+
+// WithMiddleware registers middleware functions that transform or filter
+// log entries before they are written. Middleware runs in order after
+// the entry is fully assembled (core keys, identity, fields, error
+// enrichment). Return nil from a middleware to drop the entry.
+func WithMiddleware(mw ...Middleware) Option {
+	return func(l *Logger) { l.middleware = append(l.middleware, mw...) }
+}
+
+// WithAutoFormat selects the formatter automatically based on the
+// output writer. If the writer is a terminal (e.g., os.Stderr in a
+// local shell), TextFormatter with colors is used. Otherwise,
+// JSONFormatter is used.
+//
+// Terminal detection works with direct *os.File writers and with
+// wrappers (AsyncWriter, FanOutWriter) that implement the Unwrap()
+// method to expose the underlying writer.
+func WithAutoFormat() Option {
+	return func(l *Logger) {
+		if fileIsTerminal(l.out) {
+			l.formatter = TextFormatter{}
+		} else {
+			l.formatter = JSONFormatter{}
+		}
+	}
+}
+
+// fileIsTerminal reports whether w (or an unwrapped writer inside it)
+// is an *os.File attached to a terminal.
+func fileIsTerminal(w io.Writer) bool {
+	for {
+		if f, ok := w.(*os.File); ok {
+			return isTerminal(f.Fd())
+		}
+		// Unwrap one layer if possible
+		if u, ok := w.(interface{ Unwrap() io.Writer }); ok {
+			w = u.Unwrap()
+			continue
+		}
+		return false
+	}
 }

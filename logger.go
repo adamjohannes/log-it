@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -67,9 +68,13 @@ type Logger struct {
 	hooks          []Hook
 	formatter      Formatter
 	sampler        Sampler
+	middleware     []Middleware
+	caller         bool
 	fullCallerPath bool
 	eventID        bool
+	stackTrace     bool
 	writeErrors    atomic.Int64
+	fallbackWriter io.Writer
 }
 
 // New creates a root Logger that writes to out and discards
@@ -126,9 +131,26 @@ func (l *Logger) Sync() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s, ok := r.out.(Syncer); ok {
-		return s.Sync()
+		err := s.Sync()
+		if isBenignSyncError(err) {
+			return nil
+		}
+		return err
 	}
 	return nil
+}
+
+// isBenignSyncError returns true for known harmless errors that occur
+// when syncing non-file descriptors (e.g., stdout piped to a socket).
+func isBenignSyncError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// "invalid argument" on Linux/macOS when stdout is not a file
+	// "inappropriate ioctl for device" on some Unix systems
+	return strings.Contains(msg, "invalid argument") ||
+		strings.Contains(msg, "inappropriate ioctl for device")
 }
 
 // SyncWithTimeout is like Sync but returns an error if the flush
@@ -182,7 +204,7 @@ func (l *Logger) WithContextExtractor(fn ContextExtractor) *Logger {
 var reservedKeys = map[string]struct{}{
 	"time": {}, "level": {}, "message": {}, "file": {},
 	"service": {}, "version": {}, "env": {}, "host": {},
-	"event_id": {},
+	"event_id": {}, "stacktrace": {},
 }
 
 // eventCounter provides unique sequence numbers for event IDs.
@@ -193,6 +215,31 @@ func generateEventID() string {
 	ts := time.Now().UnixNano()
 	seq := eventCounter.Add(1)
 	return fmt.Sprintf("%x-%x", ts, seq)
+}
+
+// captureStackTrace captures a stack trace starting at the given skip depth.
+func captureStackTrace(skip int) string {
+	var pcs [32]uintptr
+	n := runtime.Callers(skip, pcs[:])
+	if n == 0 {
+		return ""
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	var b strings.Builder
+	for {
+		frame, more := frames.Next()
+		if frame.Function == "" {
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		fmt.Fprintf(&b, "%s\n\t%s:%d", frame.Function, frame.File, frame.Line)
+		if !more {
+			break
+		}
+	}
+	return b.String()
 }
 
 // resolveLogValuers scans fields for values implementing slog.LogValuer
@@ -307,23 +354,23 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 //
 //go:noinline
 func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[string]any) {
-	_, file, line, ok := runtime.Caller(3)
-	if !ok {
-		file = "???"
-		line = 0
-	} else {
-		if !r.fullCallerPath {
-			if slash := strings.LastIndex(file, "/"); slash >= 0 {
-				file = file[slash+1:]
-			}
-		}
-	}
-
 	entry := make(map[string]any, 4+len(fields))
 	entry["time"] = time.Now().UTC().Format(time.RFC3339Nano)
 	entry["level"] = level.String()
 	entry["message"] = message
-	entry["file"] = fmt.Sprintf("%s:%d", file, line)
+
+	if r.caller {
+		_, file, line, ok := runtime.Caller(3)
+		if !ok {
+			file = "???"
+			line = 0
+		} else if !r.fullCallerPath {
+			if slash := strings.LastIndex(file, "/"); slash >= 0 {
+				file = file[slash+1:]
+			}
+		}
+		entry["file"] = fmt.Sprintf("%s:%d", file, line)
+	}
 
 	if id := r.identity; id != nil {
 		entry["service"] = id.Service
@@ -347,6 +394,18 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		}
 	}
 
+	if r.stackTrace && level >= ERROR {
+		entry["stacktrace"] = captureStackTrace(4)
+	}
+
+	// Run middleware chain; nil return means drop the entry
+	for _, mw := range r.middleware {
+		entry = mw(entry)
+		if entry == nil {
+			return
+		}
+	}
+
 	data, err := r.formatter.Format(entry)
 	if err != nil {
 		fallback := map[string]string{
@@ -357,13 +416,22 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		data, _ = json.Marshal(fallback)
 	}
 
+	// Use pooled buffer to append newline and write atomically
+	writeBuf := bufPool.Get().(*bytes.Buffer)
+	writeBuf.Reset()
+	writeBuf.Write(data)
+	writeBuf.WriteByte('\n')
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	data = append(data, '\n')
-	if _, err := r.out.Write(data); err != nil {
+	if _, err := r.out.Write(writeBuf.Bytes()); err != nil {
 		r.writeErrors.Add(1)
+		if r.fallbackWriter != nil {
+			_, _ = r.fallbackWriter.Write(writeBuf.Bytes())
+		}
 	}
+	bufPool.Put(writeBuf)
 
 	if hooks := r.hooks; len(hooks) > 0 {
 		for _, hook := range hooks {
