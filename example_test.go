@@ -87,7 +87,7 @@ func ExampleNewAsyncWriter() {
 	if err != nil {
 		panic(err)
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 
 	fan := logger.NewFanOutWriter(os.Stdout, file)
 	async := logger.NewAsyncWriter(fan, 4096)
