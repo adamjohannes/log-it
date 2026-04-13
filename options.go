@@ -64,10 +64,21 @@ func WithSampler(s Sampler) Option {
 	return func(l *Logger) { l.sampler = s }
 }
 
+// WithCaller enables caller information (file and line number) in the
+// "file" field of every log entry. Disabled by default because
+// runtime.Caller has a measurable cost (~300–600ns per call).
+func WithCaller() Option {
+	return func(l *Logger) { l.caller = true }
+}
+
 // WithFullCallerPath includes the full file path (including package
 // directory) in the "file" field instead of just the basename.
+// Implies WithCaller().
 func WithFullCallerPath() Option {
-	return func(l *Logger) { l.fullCallerPath = true }
+	return func(l *Logger) {
+		l.caller = true
+		l.fullCallerPath = true
+	}
 }
 
 // WithEventID enables automatic generation of a unique event_id

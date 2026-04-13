@@ -65,10 +65,15 @@ func TestFlattenFieldsAtTopLevel(t *testing.T) {
 	}
 
 	// Core keys should be present
-	for _, key := range []string{"time", "level", "message", "file"} {
+	for _, key := range []string{"time", "level", "message"} {
 		if _, exists := entry[key]; !exists {
 			t.Errorf("expected core key %q to be present", key)
 		}
+	}
+
+	// "file" should NOT be present by default (caller capture is opt-in)
+	if _, exists := entry["file"]; exists {
+		t.Error("expected no 'file' key by default (caller is opt-in)")
 	}
 }
 
@@ -99,9 +104,9 @@ func TestFlattenNoFields(t *testing.T) {
 		l.Info("bare", nil)
 	})
 
-	// Should have exactly 4 core keys
-	if len(entry) != 4 {
-		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	// Should have exactly 3 core keys (time, level, message — no file without WithCaller)
+	if len(entry) != 3 {
+		t.Errorf("expected 3 keys, got %d: %v", len(entry), entry)
 	}
 }
 
@@ -110,8 +115,8 @@ func TestFlattenEmptyFields(t *testing.T) {
 		l.Info("bare", map[string]any{})
 	})
 
-	if len(entry) != 4 {
-		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	if len(entry) != 3 {
+		t.Errorf("expected 3 keys, got %d: %v", len(entry), entry)
 	}
 }
 
@@ -159,7 +164,7 @@ func TestFlattenWithContextExtractor(t *testing.T) {
 }
 
 func TestCoreKeysPresent(t *testing.T) {
-	entry := captureLog(func(l *Logger) {
+	entry := captureLogWithOpts([]Option{WithCaller()}, func(l *Logger) {
 		l.Debug("dbg", nil)
 	})
 
@@ -436,10 +441,62 @@ func TestTraceLevelString(t *testing.T) {
 	}
 }
 
+// --- Caller capture tests ---
+
+func TestCallerDisabledByDefault(t *testing.T) {
+	entry := captureLog(func(l *Logger) {
+		l.Info("no-caller", nil)
+	})
+	if _, exists := entry["file"]; exists {
+		t.Error("expected no 'file' key when caller capture is disabled")
+	}
+}
+
+func TestCallerEnabledWithOption(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithCaller()}, func(l *Logger) {
+		l.Info("with-caller", nil)
+	})
+	file, ok := entry["file"].(string)
+	if !ok || file == "" {
+		t.Errorf("expected file to be present with WithCaller(), got %v", entry["file"])
+	}
+	if !strings.Contains(file, "logger_test.go") {
+		t.Errorf("expected file to contain logger_test.go, got %v", file)
+	}
+}
+
+func TestFullCallerPathImpliesCaller(t *testing.T) {
+	entry := captureLogWithOpts([]Option{WithFullCallerPath()}, func(l *Logger) {
+		l.Info("implied-caller", nil)
+	})
+	file, ok := entry["file"].(string)
+	if !ok || file == "" {
+		t.Error("expected WithFullCallerPath to imply caller capture")
+	}
+	if !strings.Contains(file, "/") {
+		t.Errorf("expected full path, got %v", file)
+	}
+}
+
+func TestCallerInheritedByChild(t *testing.T) {
+	var buf bytes.Buffer
+	root := New(&buf, DEBUG, WithCaller())
+	child := root.With(map[string]any{"component": "test"})
+	child.Info("from-child", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := entry["file"].(string); !ok {
+		t.Error("expected child to inherit caller capture from root")
+	}
+}
+
 // --- Full caller path tests ---
 
 func TestDefaultCallerIsBasename(t *testing.T) {
-	entry := captureLog(func(l *Logger) {
+	entry := captureLogWithOpts([]Option{WithCaller()}, func(l *Logger) {
 		l.Info("test", nil)
 	})
 	file, _ := entry["file"].(string)
@@ -742,9 +799,9 @@ func TestFormattedMethodsHaveNoFields(t *testing.T) {
 		l.Infof("hello %s", "world")
 	})
 
-	// Should have exactly 4 core keys, no user fields
-	if len(entry) != 4 {
-		t.Errorf("expected 4 keys, got %d: %v", len(entry), entry)
+	// Should have exactly 3 core keys, no user fields (no file without WithCaller)
+	if len(entry) != 3 {
+		t.Errorf("expected 3 keys, got %d: %v", len(entry), entry)
 	}
 }
 

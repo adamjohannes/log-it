@@ -67,6 +67,7 @@ type Logger struct {
 	hooks          []Hook
 	formatter      Formatter
 	sampler        Sampler
+	caller         bool
 	fullCallerPath bool
 	eventID        bool
 	writeErrors    atomic.Int64
@@ -307,23 +308,23 @@ func (l *Logger) internalLogCtx(ctx context.Context, level Level, message string
 //
 //go:noinline
 func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[string]any) {
-	_, file, line, ok := runtime.Caller(3)
-	if !ok {
-		file = "???"
-		line = 0
-	} else {
-		if !r.fullCallerPath {
-			if slash := strings.LastIndex(file, "/"); slash >= 0 {
-				file = file[slash+1:]
-			}
-		}
-	}
-
 	entry := make(map[string]any, 4+len(fields))
 	entry["time"] = time.Now().UTC().Format(time.RFC3339Nano)
 	entry["level"] = level.String()
 	entry["message"] = message
-	entry["file"] = fmt.Sprintf("%s:%d", file, line)
+
+	if r.caller {
+		_, file, line, ok := runtime.Caller(3)
+		if !ok {
+			file = "???"
+			line = 0
+		} else if !r.fullCallerPath {
+			if slash := strings.LastIndex(file, "/"); slash >= 0 {
+				file = file[slash+1:]
+			}
+		}
+		entry["file"] = fmt.Sprintf("%s:%d", file, line)
+	}
 
 	if id := r.identity; id != nil {
 		entry["service"] = id.Service
