@@ -1,6 +1,6 @@
 # log-it
 
-A structured, leveled JSON logger for Go. Pure stdlib, zero dependencies, 138 tests.
+A structured, leveled JSON logger for Go. Pure stdlib, zero dependencies, 168 tests.
 
 ```go
 import logger "github.com/adamjohannes/log-it"
@@ -51,7 +51,16 @@ func main() {
 - **`log/slog` integration**: `slog.Handler` adapter for ecosystem compatibility
 - **Timing helpers**: `Timed()` / `TimedContext()` for defer-friendly duration logging
 - **Event IDs**: unique per-entry IDs for pipeline deduplication
-- **Graceful shutdown**: `Sync()` flushes all buffered entries before exit
+- **Graceful shutdown**: `Sync()` and `SyncWithTimeout()` flush all buffered entries before exit
+- **Context-based logger passing**: `WithLogger()` / `FromContext()` for request-scoped propagation
+- **Global default logger**: `Default()` / `SetDefault()` with lazy initialization
+- **`*log.Logger` bridge**: `StdLogger()` for stdlib interop
+- **`slog.LogValuer` support**: PII redaction and lazy field evaluation
+- **Cloud provider remapping**: `KeyMap` on formatters for GCP, Datadog field names
+- **Environment variable config**: `WithEnvConfig()` reads `LOG_LEVEL` and `LOG_FORMAT`
+- **Write error monitoring**: `WriteErrorCount()` tracks failed writes
+- **Nested field groups**: `Group()` constructor for hierarchical JSON
+- **Nop logger**: `Nop()` for safe discard in tests
 
 ## Logging Styles
 
@@ -91,7 +100,7 @@ log.Infow("request handled",
 )
 ```
 
-Available constructors: `String`, `Int`, `Int64`, `Float64`, `Bool`, `Err`, `Duration`, `Any`.
+Available constructors: `String`, `Int`, `Int64`, `Float64`, `Bool`, `Err`, `Duration`, `Any`, `Group`.
 
 ## Child Loggers
 
@@ -141,6 +150,7 @@ log := logger.New(os.Stdout, logger.INFO,
 | `WithHooks(hooks...)` | Register post-write callback functions |
 | `WithEventID()` | Generate unique `event_id` per entry |
 | `WithFullCallerPath()` | Include full file path instead of basename in `file` field |
+| `WithEnvConfig()` | Read `LOG_LEVEL` and `LOG_FORMAT` from environment variables |
 
 ## Writers
 
@@ -292,9 +302,116 @@ defer log.Sync()
 
 `Sync()` flushes the async buffer, syncs fan-out writers, and prevents further entries from being accepted.
 
+For deadline-aware flushing:
+
+```go
+err := log.SyncWithTimeout(5 * time.Second)
+```
+
+## Context-Based Logger Passing
+
+Store and retrieve a logger from `context.Context`:
+
+```go
+// In middleware
+ctx := logger.WithLogger(r.Context(), reqLogger)
+
+// In handlers
+log := logger.FromContext(ctx)
+log.Info("handled", nil)
+```
+
+`FromContext` falls back to `Default()` if no logger is in the context.
+
+## Global Default Logger
+
+```go
+logger.SetDefault(myLogger)
+
+log := logger.Default() // returns the global default
+```
+
+If no default is set, `Default()` returns a logger writing JSON to stderr at INFO level.
+
+## Standard Library Bridge
+
+Bridge to code that accepts `*log.Logger`:
+
+```go
+stdLog := log.StdLogger(logger.WARNING)
+httpServer.ErrorLog = stdLog
+```
+
+## Cloud Provider Remapping
+
+Remap core field names for cloud logging platforms:
+
+```go
+// Google Cloud Logging
+log := logger.New(os.Stdout, logger.INFO,
+    logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.GCPKeyMap}),
+)
+// Output: {"severity":"INFO","textPayload":"...","time":"..."}
+```
+
+Custom remapping:
+
+```go
+logger.JSONFormatter{KeyMap: map[string]string{"level": "severity", "message": "msg"}}
+```
+
+## Environment Variables
+
+```go
+log := logger.New(os.Stdout, logger.INFO, logger.WithEnvConfig())
+```
+
+Reads `LOG_LEVEL` (trace/debug/info/warning/error/fatal) and `LOG_FORMAT` (json/text) from environment. Case-insensitive.
+
+## PII Redaction (slog.LogValuer)
+
+Types implementing `slog.LogValuer` control their log representation:
+
+```go
+type Email string
+
+func (e Email) LogValue() slog.Value {
+    return slog.StringValue("[REDACTED]")
+}
+
+log.Info("user", map[string]any{"email": Email("alice@example.com")})
+// Output: "email":"[REDACTED]"
+```
+
+## Nested Field Groups
+
+```go
+log.Infow("request",
+    logger.Group("http",
+        logger.String("method", "GET"),
+        logger.Int("status", 200),
+    ),
+)
+// Output: "http":{"method":"GET","status":200}
+```
+
+## Nop Logger
+
+A logger that discards everything. Safe to call with any method:
+
+```go
+log := logger.Nop()
+```
+
+## Write Error Monitoring
+
+```go
+count := log.WriteErrorCount() // number of failed writes
+```
+
 ## Testing
 
-138 tests covering all public API, error paths, concurrency, and feature combinations. All passing with `-race`:
+168 tests covering all public API, error paths, concurrency, and feature combinations. All passing with `-race`:
 
 ```bash
 go test -race -v -count=1 ./...
