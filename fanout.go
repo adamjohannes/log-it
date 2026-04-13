@@ -49,3 +49,12 @@ func (f *FanOutWriter) Sync() error {
 	}
 	return errors.Join(errs...)
 }
+
+// Unwrap returns the first underlying writer. This enables
+// WithAutoFormat to detect terminal writers through wrapper layers.
+func (f *FanOutWriter) Unwrap() io.Writer {
+	if len(f.writers) > 0 {
+		return f.writers[0]
+	}
+	return nil
+}

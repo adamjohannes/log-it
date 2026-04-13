@@ -116,14 +116,33 @@ func WithMiddleware(mw ...Middleware) Option {
 // WithAutoFormat selects the formatter automatically based on the
 // output writer. If the writer is a terminal (e.g., os.Stderr in a
 // local shell), TextFormatter with colors is used. Otherwise,
-// JSONFormatter is used. This only takes effect if no explicit
-// formatter has been set via WithFormatter.
+// JSONFormatter is used.
+//
+// Terminal detection works with direct *os.File writers and with
+// wrappers (AsyncWriter, FanOutWriter) that implement the Unwrap()
+// method to expose the underlying writer.
 func WithAutoFormat() Option {
 	return func(l *Logger) {
-		if f, ok := l.out.(*os.File); ok && isTerminal(f.Fd()) {
+		if fileIsTerminal(l.out) {
 			l.formatter = TextFormatter{}
 		} else {
 			l.formatter = JSONFormatter{}
 		}
+	}
+}
+
+// fileIsTerminal reports whether w (or an unwrapped writer inside it)
+// is an *os.File attached to a terminal.
+func fileIsTerminal(w io.Writer) bool {
+	for {
+		if f, ok := w.(*os.File); ok {
+			return isTerminal(f.Fd())
+		}
+		// Unwrap one layer if possible
+		if u, ok := w.(interface{ Unwrap() io.Writer }); ok {
+			w = u.Unwrap()
+			continue
+		}
+		return false
 	}
 }

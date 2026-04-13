@@ -72,9 +72,54 @@ func TestExtractLevel(t *testing.T) {
 		{`not json at all`, INFO},             // default
 	}
 	for _, tt := range tests {
-		got := extractLevel([]byte(tt.input))
+		got := extractLevel([]byte(tt.input), "level")
 		if got != tt.want {
 			t.Errorf("extractLevel(%q) = %v, want %v", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestFilteredWriterWithKeyMap(t *testing.T) {
+	var buf bytes.Buffer
+	fw := NewFilteredWriter(&buf, ERROR, WithLevelKey("severity"))
+	l := New(fw, DEBUG, WithFormatter(JSONFormatter{KeyMap: GCPKeyMap}))
+
+	l.Info("should-drop", nil)
+	l.Error("should-pass", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry with KeyMap, got %d", len(entries))
+	}
+	if entries[0]["textPayload"] != "should-pass" {
+		t.Errorf("expected should-pass, got %v", entries[0]["textPayload"])
+	}
+}
+
+func TestFilteredWriterWithDatadogKeyMap(t *testing.T) {
+	var buf bytes.Buffer
+	fw := NewFilteredWriter(&buf, WARNING, WithLevelKey("status"))
+	l := New(fw, DEBUG, WithFormatter(JSONFormatter{KeyMap: DatadogKeyMap}))
+
+	l.Debug("drop-debug", nil)
+	l.Info("drop-info", nil)
+	l.Warning("pass-warn", nil)
+	l.Error("pass-error", nil)
+
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries with DatadogKeyMap, got %d", len(entries))
+	}
+}
+
+func TestExtractLevelWithCustomKey(t *testing.T) {
+	got := extractLevel([]byte(`{"severity":"ERROR","message":"x"}`), "severity")
+	if got != ERROR {
+		t.Errorf("expected ERROR with custom key, got %v", got)
+	}
+
+	got = extractLevel([]byte(`{"status":"WARNING","message":"x"}`), "status")
+	if got != WARNING {
+		t.Errorf("expected WARNING with custom key, got %v", got)
 	}
 }

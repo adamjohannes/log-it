@@ -294,3 +294,21 @@ func TestAutoFormatNonTerminalUsesJSON(t *testing.T) {
 		t.Errorf("expected message=auto, got %v", entry["message"])
 	}
 }
+
+func TestAutoFormatUnwrapsAsyncWriter(t *testing.T) {
+	// AsyncWriter around a bytes.Buffer is still not a terminal
+	var buf bytes.Buffer
+	aw := NewAsyncWriter(&buf, 64)
+	l := New(aw, INFO, WithAutoFormat())
+	l.Info("unwrapped", nil)
+	_ = l.Sync()
+
+	// Should be JSON (Buffer is not a terminal)
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0]["message"] != "unwrapped" {
+		t.Errorf("expected message=unwrapped, got %v", entries[0]["message"])
+	}
+}
