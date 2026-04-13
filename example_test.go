@@ -1,6 +1,7 @@
 package logger_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -162,4 +163,56 @@ func ExampleLogger_StdLogger() {
 	// Bridge to standard library's *log.Logger
 	stdLog := log.StdLogger(logger.WARNING)
 	_ = stdLog // use as httpServer.ErrorLog, sql.DB logger, etc.
+}
+
+// ExampleLogger_WithContextExtractor_traceID demonstrates how to
+// extract OpenTelemetry-style trace and span IDs from context.Context
+// using a context extractor. No OTel dependency is needed — the
+// extractor pulls whatever your tracing library stores in context.
+func ExampleLogger_WithContextExtractor_traceID() {
+	// This simulates what OpenTelemetry or similar tracing libraries do:
+	// store trace context in context.Context. Replace with real OTel calls:
+	//   span := trace.SpanFromContext(ctx)
+	//   traceID := span.SpanContext().TraceID().String()
+	type traceCtxKey struct{}
+	type traceInfo struct{ TraceID, SpanID string }
+
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO)
+	log = log.WithContextExtractor(func(ctx context.Context) map[string]any {
+		if info, ok := ctx.Value(traceCtxKey{}).(traceInfo); ok {
+			return map[string]any{
+				"trace_id": info.TraceID,
+				"span_id":  info.SpanID,
+			}
+		}
+		return nil
+	})
+
+	// In your HTTP handler or gRPC interceptor:
+	ctx := context.WithValue(context.Background(), traceCtxKey{}, traceInfo{
+		TraceID: "abc123",
+		SpanID:  "def456",
+	})
+
+	log.InfoContext(ctx, "request handled", map[string]any{"status": 200})
+
+	// Verify trace context is present in the log output
+	output := buf.String()
+	hasTrace := contains(output, `"trace_id":"abc123"`) && contains(output, `"span_id":"def456"`)
+	fmt.Println("trace context logged:", hasTrace)
+	// Output: trace context logged: true
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
