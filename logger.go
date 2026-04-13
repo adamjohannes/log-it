@@ -309,6 +309,11 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	}
 
 	if level == FATAL {
+		// Flush async-buffered logs before exiting. We're already holding
+		// the mutex so call Sync on the writer directly (not l.Sync()).
+		if s, ok := r.out.(Syncer); ok {
+			_ = s.Sync()
+		}
 		r.exitFunc(1)
 	}
 }

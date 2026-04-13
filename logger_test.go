@@ -638,6 +638,37 @@ func TestFatalWritesBeforeExiting(t *testing.T) {
 	}
 }
 
+func TestFatalSyncsAsyncWriter(t *testing.T) {
+	var buf bytes.Buffer
+	aw := NewAsyncWriter(&buf, 256)
+	var exitCode int
+	l := New(aw, DEBUG, withExitFunc(noopExit(&exitCode)))
+
+	// Write some entries through async path
+	for i := 0; i < 5; i++ {
+		l.Info("before-fatal", map[string]any{"i": i})
+	}
+	l.Fatal("the end", nil)
+
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
+
+	// After Fatal + sync, all entries should be in the buffer
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 6 {
+		t.Errorf("expected 6 entries (5 info + 1 fatal), got %d", len(entries))
+	}
+
+	// Last entry should be FATAL
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		if last["level"] != "FATAL" {
+			t.Errorf("expected last entry level=FATAL, got %v", last["level"])
+		}
+	}
+}
+
 // --- Formatted methods ---
 
 func TestAllFormattedLevels(t *testing.T) {
