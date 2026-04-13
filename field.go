@@ -96,6 +96,16 @@ func Any(key string, val any) Field {
 	return Field{Key: key, Type: FieldTypeAny, Interface: val}
 }
 
+// Group creates a Field containing nested key-value pairs.
+// The value is serialized as a nested JSON object.
+func Group(key string, fields ...Field) Field {
+	m := make(map[string]any, len(fields))
+	for _, f := range fields {
+		m[f.Key] = f.Value()
+	}
+	return Field{Key: key, Type: FieldTypeAny, Interface: m}
+}
+
 // fieldsToMap converts a slice of typed Fields to a map for internal use.
 func fieldsToMap(fields []Field) map[string]any {
 	if len(fields) == 0 {
