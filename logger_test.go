@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+// redactedEmail implements slog.LogValuer for PII redaction.
+type redactedEmail string
+
+func (e redactedEmail) LogValue() slog.Value {
+	return slog.StringValue("[REDACTED]")
+}
+
+// nestedValuer implements LogValuer returning another LogValuer.
+type nestedValuer struct{}
+
+func (nestedValuer) LogValue() slog.Value {
+	return slog.AnyValue(redactedEmail("inner"))
+}
+
 // captureLog runs fn with a DEBUG-level logger writing to a buffer,
 // then returns the first log entry as a map.
 func captureLog(fn func(l *Logger)) map[string]any {
@@ -1645,4 +1659,52 @@ func (w *slowSyncWriter) Write(p []byte) (int, error) { return len(p), nil }
 func (w *slowSyncWriter) Sync() error {
 	<-w.blockCh
 	return nil
+}
+
+// --- slog.LogValuer support ---
+
+func TestLogValuerResolved(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	l.Info("pii-test", map[string]any{"email": redactedEmail("alice@example.com")})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["email"] != "[REDACTED]" {
+		t.Errorf("expected email=[REDACTED], got %v", entry["email"])
+	}
+}
+
+func TestLogValuerNested(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	l.Info("nested-valuer", map[string]any{"data": nestedValuer{}})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	// nestedValuer → redactedEmail → "[REDACTED]"
+	if entry["data"] != "[REDACTED]" {
+		t.Errorf("expected data=[REDACTED] (resolved through nested LogValuer), got %v", entry["data"])
+	}
+}
+
+func TestLogValuerNotTriggeredOnPlainValues(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	l.Info("plain", map[string]any{"name": "alice"})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["name"] != "alice" {
+		t.Errorf("expected name=alice, got %v", entry["name"])
+	}
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
@@ -188,6 +189,40 @@ func generateEventID() string {
 	return fmt.Sprintf("%x-%x", ts, seq)
 }
 
+// resolveLogValuers scans fields for values implementing slog.LogValuer
+// and replaces them with their resolved values. This enables PII types
+// that control their own log representation. Resolves recursively up to
+// a depth of 10 to prevent infinite loops.
+func resolveLogValuers(fields map[string]any) map[string]any {
+	if len(fields) == 0 {
+		return fields
+	}
+	var resolved map[string]any
+	for k, v := range fields {
+		if lv, ok := v.(slog.LogValuer); ok {
+			if resolved == nil {
+				resolved = make(map[string]any, len(fields))
+				for fk, fv := range fields {
+					resolved[fk] = fv
+				}
+			}
+			val := lv.LogValue()
+			for i := 0; i < 10; i++ {
+				if inner, ok := val.Any().(slog.LogValuer); ok {
+					val = inner.LogValue()
+				} else {
+					break
+				}
+			}
+			resolved[k] = val.Any()
+		}
+	}
+	if resolved != nil {
+		return resolved
+	}
+	return fields
+}
+
 // mergeFields combines two field maps. Overlay keys take precedence.
 func mergeFields(base, overlay map[string]any) map[string]any {
 	if len(base) == 0 {
@@ -295,6 +330,7 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		entry["event_id"] = generateEventID()
 	}
 
+	fields = resolveLogValuers(fields)
 	fields = enrichErrors(fields)
 
 	for k, v := range fields {
