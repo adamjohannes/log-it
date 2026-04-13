@@ -120,11 +120,45 @@ func colorize(level string) string {
 }
 
 // sanitizeText escapes control characters that could create fake log
-// lines or corrupt text output (log injection prevention).
+// lines or corrupt text output (log injection prevention), and strips
+// ANSI escape sequences that could alter terminal rendering.
 func sanitizeText(s string) string {
+	s = stripANSI(s)
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	return s
+}
+
+// stripANSI removes ANSI escape sequences (ESC[...X) from s.
+// Uses a simple state machine rather than regexp to avoid the import.
+func stripANSI(s string) string {
+	// Fast path: no ESC byte means no ANSI sequences
+	if !strings.Contains(s, "\033") {
+		return s
+	}
+	b := make([]byte, 0, len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
+			// Skip ESC[ and everything up to the terminating letter
+			i += 2
+			for i < len(s) && !isANSITerminator(s[i]) {
+				i++
+			}
+			if i < len(s) {
+				i++ // skip the terminator
+			}
+		} else {
+			b = append(b, s[i])
+			i++
+		}
+	}
+	return string(b)
+}
+
+// isANSITerminator returns true if b is a valid ANSI CSI final byte.
+func isANSITerminator(b byte) bool {
+	return b >= 0x40 && b <= 0x7E
 }
 
 // applyKeyMap renames keys in the entry map according to the provided mapping.
@@ -144,4 +178,17 @@ func applyKeyMap(entry map[string]any, keyMap map[string]string) map[string]any 
 var GCPKeyMap = map[string]string{
 	"level":   "severity",
 	"message": "textPayload",
+}
+
+// DatadogKeyMap is a key remapping preset for Datadog Log Management.
+// Datadog expects "status" for the severity level.
+var DatadogKeyMap = map[string]string{
+	"level": "status",
+}
+
+// ELKKeyMap is a key remapping preset for Elastic/ELK stack compatibility.
+// Elasticsearch expects "@timestamp" and "log.level".
+var ELKKeyMap = map[string]string{
+	"time":  "@timestamp",
+	"level": "log.level",
 }

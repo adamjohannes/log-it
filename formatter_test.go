@@ -156,6 +156,41 @@ func TestTextFormatterSanitizesMessage(t *testing.T) {
 	}
 }
 
+func TestTextFormatterStripsANSIFromValues(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	l.Info("test", map[string]any{"injected": "\033[31mred text\033[0m"})
+
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Errorf("expected ANSI codes to be stripped, got: %s", output)
+	}
+	if !strings.Contains(output, "red text") {
+		t.Errorf("expected text content preserved after ANSI strip: %s", output)
+	}
+}
+
+func TestTextFormatterStripsANSIFromMessage(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	l.Info("\033[1mbold message\033[0m", nil)
+
+	output := buf.String()
+	if strings.Contains(output, "\033[") {
+		t.Errorf("expected ANSI codes to be stripped from message, got: %s", output)
+	}
+	if !strings.Contains(output, "bold message") {
+		t.Errorf("expected message text preserved: %s", output)
+	}
+}
+
+func TestStripANSINoEscapePassthrough(t *testing.T) {
+	input := "no escape here"
+	if got := stripANSI(input); got != input {
+		t.Errorf("expected passthrough, got %q", got)
+	}
+}
+
 // --- KeyMap remapping tests ---
 
 func TestJSONFormatterKeyMap(t *testing.T) {
@@ -194,6 +229,40 @@ func TestGCPKeyMapPreset(t *testing.T) {
 	}
 	if entry["textPayload"] != "gcp-test" {
 		t.Errorf("expected textPayload=gcp-test, got %v", entry["textPayload"])
+	}
+}
+
+func TestDatadogKeyMapPreset(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(JSONFormatter{KeyMap: DatadogKeyMap}))
+	l.Info("dd-test", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["status"] != "INFO" {
+		t.Errorf("expected status=INFO, got %v", entry["status"])
+	}
+	if _, exists := entry["level"]; exists {
+		t.Error("expected 'level' key to be remapped to 'status'")
+	}
+}
+
+func TestELKKeyMapPreset(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(JSONFormatter{KeyMap: ELKKeyMap}))
+	l.Info("elk-test", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := entry["@timestamp"]; !exists {
+		t.Error("expected @timestamp key from ELKKeyMap")
+	}
+	if entry["log.level"] != "INFO" {
+		t.Errorf("expected log.level=INFO, got %v", entry["log.level"])
 	}
 }
 
