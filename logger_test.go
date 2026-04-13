@@ -1947,3 +1947,33 @@ func TestMiddlewareInheritedByChild(t *testing.T) {
 		t.Errorf("expected middleware to run on child, got env=%v", entry["env"])
 	}
 }
+
+// --- Benign sync error tests ---
+
+type benignSyncer struct {
+	errMsg string
+}
+
+func (s *benignSyncer) Write(p []byte) (int, error) { return len(p), nil }
+func (s *benignSyncer) Sync() error                 { return errors.New(s.errMsg) }
+
+func TestSyncIgnoresInvalidArgumentError(t *testing.T) {
+	l := New(&benignSyncer{errMsg: "sync /dev/stdout: invalid argument"}, INFO)
+	if err := l.Sync(); err != nil {
+		t.Errorf("expected nil error for benign sync, got %v", err)
+	}
+}
+
+func TestSyncIgnoresInappropriateIoctlError(t *testing.T) {
+	l := New(&benignSyncer{errMsg: "inappropriate ioctl for device"}, INFO)
+	if err := l.Sync(); err != nil {
+		t.Errorf("expected nil error for benign sync, got %v", err)
+	}
+}
+
+func TestSyncReturnsRealErrors(t *testing.T) {
+	l := New(&benignSyncer{errMsg: "disk full"}, INFO)
+	if err := l.Sync(); err == nil {
+		t.Error("expected error for real sync failure")
+	}
+}

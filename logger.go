@@ -130,9 +130,26 @@ func (l *Logger) Sync() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if s, ok := r.out.(Syncer); ok {
-		return s.Sync()
+		err := s.Sync()
+		if isBenignSyncError(err) {
+			return nil
+		}
+		return err
 	}
 	return nil
+}
+
+// isBenignSyncError returns true for known harmless errors that occur
+// when syncing non-file descriptors (e.g., stdout piped to a socket).
+func isBenignSyncError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	// "invalid argument" on Linux/macOS when stdout is not a file
+	// "inappropriate ioctl for device" on some Unix systems
+	return strings.Contains(msg, "invalid argument") ||
+		strings.Contains(msg, "inappropriate ioctl for device")
 }
 
 // SyncWithTimeout is like Sync but returns an error if the flush
