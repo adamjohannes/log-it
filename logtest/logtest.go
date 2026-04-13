@@ -1,11 +1,15 @@
 // Package logtest provides test helpers for the log-it logger.
 //
-// TestHandler captures log entries for assertion in tests:
+// TestHandler captures log entries for assertion in tests. It is safe
+// for concurrent use from multiple goroutines.
 //
 //	l, h := logtest.NewTestLogger(t)
 //	myService := NewService(l)
 //	myService.DoSomething()
+//
 //	logtest.AssertLogged(t, h, "INFO", "something happened")
+//	logtest.AssertNotLogged(t, h, "ERROR", "")
+//	h.Reset() // clear captured records between test phases
 //
 // NewTLogger routes log output through t.Log() so entries appear
 // only when running tests with -v:

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	logger "github.com/adamjohannes/log-it"
 )
@@ -199,20 +200,122 @@ func ExampleLogger_WithContextExtractor_traceID() {
 
 	// Verify trace context is present in the log output
 	output := buf.String()
-	hasTrace := contains(output, `"trace_id":"abc123"`) && contains(output, `"span_id":"def456"`)
+	hasTrace := strings.Contains(output, `"trace_id":"abc123"`) && strings.Contains(output, `"span_id":"def456"`)
 	fmt.Println("trace context logged:", hasTrace)
 	// Output: trace context logged: true
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && searchString(s, substr)
+func ExampleLogfmtFormatter() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithFormatter(logger.LogfmtFormatter{}),
+	)
+
+	log.Info("request handled", map[string]any{"method": "GET", "status": 200})
+
+	output := buf.String()
+	fmt.Println("has level:", strings.Contains(output, "level=INFO"))
+	fmt.Println("has message:", strings.Contains(output, "message="))
+	fmt.Println("has status:", strings.Contains(output, "status=200"))
+	// Output:
+	// has level: true
+	// has message: true
+	// has status: true
 }
 
-func searchString(s, substr string) bool {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func ExampleNewFilteredWriter() {
+	var infoBuf, errorBuf bytes.Buffer
+
+	fan := logger.NewFanOutWriter(
+		logger.NewFilteredWriter(&infoBuf, logger.INFO),   // INFO+ to infoBuf
+		logger.NewFilteredWriter(&errorBuf, logger.ERROR), // ERROR+ to errorBuf
+	)
+	log := logger.New(fan, logger.DEBUG)
+
+	log.Debug("debug msg", nil)
+	log.Info("info msg", nil)
+	log.Error("error msg", nil)
+
+	infoLines := strings.Count(strings.TrimSpace(infoBuf.String()), "\n") + 1
+	errorLines := strings.Count(strings.TrimSpace(errorBuf.String()), "\n") + 1
+
+	fmt.Println("info sink entries:", infoLines)   // INFO + ERROR
+	fmt.Println("error sink entries:", errorLines)  // ERROR only
+	// Output:
+	// info sink entries: 2
+	// error sink entries: 1
+}
+
+func ExampleWithRedactFields() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithRedactFields("password", "token"),
+	)
+
+	log.Info("login", map[string]any{
+		"user":     "alice",
+		"password": "s3cret",
+		"token":    "abc-xyz",
+	})
+
+	output := buf.String()
+	fmt.Println("password hidden:", strings.Contains(output, `"[REDACTED]"`))
+	fmt.Println("user visible:", strings.Contains(output, `"alice"`))
+	// Output:
+	// password hidden: true
+	// user visible: true
+}
+
+func ExampleWithMiddleware() {
+	var buf bytes.Buffer
+
+	// Middleware that adds a field to every entry
+	addRegion := func(entry map[string]any) map[string]any {
+		entry["region"] = "us-east-1"
+		return entry
 	}
-	return false
+
+	// Middleware that drops health check logs
+	dropHealth := func(entry map[string]any) map[string]any {
+		if msg, _ := entry["message"].(string); msg == "health check" {
+			return nil
+		}
+		return entry
+	}
+
+	log := logger.New(&buf, logger.INFO,
+		logger.WithMiddleware(addRegion, dropHealth),
+	)
+
+	log.Info("health check", nil)
+	log.Info("real request", nil)
+
+	output := buf.String()
+	fmt.Println("health check dropped:", !strings.Contains(output, "health check"))
+	fmt.Println("region added:", strings.Contains(output, "us-east-1"))
+	// Output:
+	// health check dropped: true
+	// region added: true
+}
+
+func ExampleWithFallbackWriter() {
+	// Primary writer and fallback — if primary fails, fallback gets the entry
+	var fallback bytes.Buffer
+	log := logger.New(os.Stdout, logger.INFO,
+		logger.WithFallbackWriter(&fallback),
+	)
+	_ = log // use normally; if stdout fails, entries go to fallback
+}
+
+func ExampleWithStackTrace() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithStackTrace(),
+	)
+
+	log.Error("something broke", nil)
+
+	output := buf.String()
+	fmt.Println("has stacktrace:", strings.Contains(output, "stacktrace"))
+	// Output: has stacktrace: true
 }
