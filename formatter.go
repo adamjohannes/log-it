@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // Formatter serializes a log entry map into bytes.
@@ -45,7 +46,7 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 		displayLevel = colorize(level)
 	}
 
-	fmt.Fprintf(&buf, "%s %-7s [%s] %s", ts, displayLevel, file, msg)
+	fmt.Fprintf(&buf, "%s %-7s [%s] %s", ts, displayLevel, file, sanitizeText(msg))
 
 	// Collect extra keys in sorted order for deterministic output
 	coreKeys := map[string]struct{}{
@@ -60,7 +61,7 @@ func (f TextFormatter) Format(entry map[string]any) ([]byte, error) {
 	sort.Strings(extraKeys)
 
 	for _, k := range extraKeys {
-		fmt.Fprintf(&buf, "  %s=%v", k, entry[k])
+		fmt.Fprintf(&buf, "  %s=%s", k, sanitizeText(fmt.Sprintf("%v", entry[k])))
 	}
 
 	return buf.Bytes(), nil
@@ -84,4 +85,12 @@ func colorize(level string) string {
 	default:
 		return level
 	}
+}
+
+// sanitizeText escapes control characters that could create fake log
+// lines or corrupt text output (log injection prevention).
+func sanitizeText(s string) string {
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return s
 }
