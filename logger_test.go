@@ -12,6 +12,20 @@ import (
 	"time"
 )
 
+// redactedEmail implements slog.LogValuer for PII redaction.
+type redactedEmail string
+
+func (e redactedEmail) LogValue() slog.Value {
+	return slog.StringValue("[REDACTED]")
+}
+
+// nestedValuer implements LogValuer returning another LogValuer.
+type nestedValuer struct{}
+
+func (nestedValuer) LogValue() slog.Value {
+	return slog.AnyValue(redactedEmail("inner"))
+}
+
 // captureLog runs fn with a DEBUG-level logger writing to a buffer,
 // then returns the first log entry as a map.
 func captureLog(fn func(l *Logger)) map[string]any {
@@ -638,6 +652,37 @@ func TestFatalWritesBeforeExiting(t *testing.T) {
 	}
 }
 
+func TestFatalSyncsAsyncWriter(t *testing.T) {
+	var buf bytes.Buffer
+	aw := NewAsyncWriter(&buf, 256)
+	var exitCode int
+	l := New(aw, DEBUG, withExitFunc(noopExit(&exitCode)))
+
+	// Write some entries through async path
+	for i := 0; i < 5; i++ {
+		l.Info("before-fatal", map[string]any{"i": i})
+	}
+	l.Fatal("the end", nil)
+
+	if exitCode != 1 {
+		t.Errorf("expected exit code 1, got %d", exitCode)
+	}
+
+	// After Fatal + sync, all entries should be in the buffer
+	entries := decodeAllEntries(t, &buf)
+	if len(entries) != 6 {
+		t.Errorf("expected 6 entries (5 info + 1 fatal), got %d", len(entries))
+	}
+
+	// Last entry should be FATAL
+	if len(entries) > 0 {
+		last := entries[len(entries)-1]
+		if last["level"] != "FATAL" {
+			t.Errorf("expected last entry level=FATAL, got %v", last["level"])
+		}
+	}
+}
+
 // --- Formatted methods ---
 
 func TestAllFormattedLevels(t *testing.T) {
@@ -774,7 +819,7 @@ func TestContextMethodsWithNilContext(t *testing.T) {
 	})
 
 	// nil context — extractors should be skipped, no panic
-	child.InfoContext(nil, "nil-ctx", nil)
+	child.InfoContext(nil, "nil-ctx", nil) //nolint:staticcheck // deliberately testing nil context behavior
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
@@ -1542,4 +1587,171 @@ func TestMaxFeatureComposition(t *testing.T) {
 	if hookLevel != ERROR {
 		t.Errorf("hook level: got %v", hookLevel)
 	}
+}
+
+// --- Write error counter ---
+
+type testErrWriter struct{}
+
+func (testErrWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestWriteErrorCounter(t *testing.T) {
+	l := New(testErrWriter{}, DEBUG)
+	l.Info("a", nil)
+	l.Info("b", nil)
+	l.Info("c", nil)
+
+	if l.WriteErrorCount() != 3 {
+		t.Errorf("expected 3 write errors, got %d", l.WriteErrorCount())
+	}
+}
+
+func TestWriteErrorCounterZeroOnSuccess(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Info("ok", nil)
+
+	if l.WriteErrorCount() != 0 {
+		t.Errorf("expected 0 write errors, got %d", l.WriteErrorCount())
+	}
+}
+
+// --- SyncWithTimeout ---
+
+func TestSyncWithTimeoutReturnsImmediately(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Info("test", nil)
+
+	err := l.SyncWithTimeout(time.Second)
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+}
+
+func TestSyncWithTimeoutExpires(t *testing.T) {
+	// Use a writer that blocks forever
+	blockCh := make(chan struct{})
+	bw := &slowSyncWriter{blockCh: blockCh}
+	aw := NewAsyncWriter(bw, 16)
+	l := New(aw, DEBUG)
+
+	l.Info("test", nil)
+
+	err := l.SyncWithTimeout(50 * time.Millisecond)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected timeout message, got %v", err)
+	}
+
+	// Clean up: unblock to prevent goroutine leak
+	close(blockCh)
+}
+
+// slowSyncWriter implements Syncer but blocks on Sync until unblocked.
+type slowSyncWriter struct {
+	blockCh chan struct{}
+}
+
+func (w *slowSyncWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (w *slowSyncWriter) Sync() error {
+	<-w.blockCh
+	return nil
+}
+
+// --- slog.LogValuer support ---
+
+func TestLogValuerResolved(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	l.Info("pii-test", map[string]any{"email": redactedEmail("alice@example.com")})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["email"] != "[REDACTED]" {
+		t.Errorf("expected email=[REDACTED], got %v", entry["email"])
+	}
+}
+
+func TestLogValuerNested(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	l.Info("nested-valuer", map[string]any{"data": nestedValuer{}})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	// nestedValuer → redactedEmail → "[REDACTED]"
+	if entry["data"] != "[REDACTED]" {
+		t.Errorf("expected data=[REDACTED] (resolved through nested LogValuer), got %v", entry["data"])
+	}
+}
+
+func TestLogValuerNotTriggeredOnPlainValues(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	l.Info("plain", map[string]any{"name": "alice"})
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["name"] != "alice" {
+		t.Errorf("expected name=alice, got %v", entry["name"])
+	}
+}
+
+// --- Nop logger ---
+
+func TestNopProducesNoOutput(t *testing.T) {
+	l := Nop()
+	l.Trace("nope", nil)
+	l.Debug("nope", nil)
+	l.Info("nope", nil)
+	l.Warning("nope", nil)
+	l.Error("nope", nil)
+	// No way to check io.Discard wrote nothing, but no panic = pass
+}
+
+func TestNopSafeForAllMethods(t *testing.T) {
+	l := Nop()
+
+	// Structured
+	l.Trace("a", map[string]any{"k": "v"})
+	l.Info("a", nil)
+	l.Warning("a", nil)
+	l.Error("a", nil)
+
+	// Formatted
+	l.Tracef("a %d", 1)
+	l.Infof("a %d", 1)
+	l.Errorf("a %d", 1)
+
+	// Typed
+	l.Infow("a", String("k", "v"))
+	l.Errorw("a", Err(errors.New("test")))
+
+	// Context
+	l.InfoContext(context.Background(), "a", nil)
+
+	// Timing
+	done := l.Timed("op")
+	done()
+
+	// Child
+	child := l.With(map[string]any{"c": true})
+	child.Info("child", nil)
+
+	// Sync
+	_ = l.Sync()
+
+	// If we got here, all methods are safe on Nop.
 }
