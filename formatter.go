@@ -2,7 +2,6 @@ package logger
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -28,11 +27,21 @@ type JSONFormatter struct {
 }
 
 // Format marshals the entry map to JSON, applying key remapping if configured.
+// Uses a hand-rolled encoder for performance; falls back to encoding/json
+// for types it cannot handle directly.
 func (f JSONFormatter) Format(entry map[string]any) ([]byte, error) {
 	if len(f.KeyMap) > 0 {
 		entry = applyKeyMap(entry, f.KeyMap)
 	}
-	return json.Marshal(entry)
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	result := appendJSONEntry(buf.Bytes(), entry)
+	// result may have grown past buf's backing array, so copy
+	out := make([]byte, len(result))
+	copy(out, result)
+	buf.Reset()
+	bufPool.Put(buf)
+	return out, nil
 }
 
 // TextFormatter serializes entries as human-readable text, suitable

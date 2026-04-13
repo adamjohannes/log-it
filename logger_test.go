@@ -1009,19 +1009,24 @@ func TestJsonMarshalFailure(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG)
 
-	// func() is not JSON-marshalable
+	// func() is not natively JSON-marshalable; the custom encoder
+	// falls back to fmt.Sprintf for unknown types, producing a valid
+	// string representation instead of an error.
 	l.Info("bad-field", map[string]any{"fn": func() {}})
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
 		t.Fatal(err)
 	}
-	if entry["level"] != "ERROR" {
-		t.Errorf("expected fallback level=ERROR, got %v", entry["level"])
+	if entry["level"] != "INFO" {
+		t.Errorf("expected level=INFO, got %v", entry["level"])
 	}
-	msg, _ := entry["message"].(string)
-	if !strings.Contains(msg, "failed to marshal log entry to json") {
-		t.Errorf("expected English fallback message, got %v", msg)
+	if entry["message"] != "bad-field" {
+		t.Errorf("expected message=bad-field, got %v", entry["message"])
+	}
+	// The function value should be encoded as a string
+	if _, ok := entry["fn"].(string); !ok {
+		t.Errorf("expected fn to be a string fallback, got %T", entry["fn"])
 	}
 }
 
@@ -1029,13 +1034,13 @@ func TestJsonMarshalFallbackNoInjection(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG)
 
-	// func() triggers marshal failure; the error message from json.Marshal
-	// may contain quotes. Verify the fallback is still valid JSON.
+	// func() triggers fallback encoding to string representation.
+	// Verify the output is still valid JSON (no injection via the string).
 	l.Info("inject-test", map[string]any{"fn": func() {}})
 
 	var entry map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
-		t.Fatalf("fallback JSON is invalid (possible injection): %v\nraw: %s", err, buf.String())
+		t.Fatalf("output JSON is invalid (possible injection): %v\nraw: %s", err, buf.String())
 	}
 }
 
