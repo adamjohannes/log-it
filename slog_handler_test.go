@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -182,5 +183,25 @@ func TestSlogHandlerWithLoggerFields(t *testing.T) {
 	}
 	if entry["action"] != "create" {
 		t.Errorf("expected action=create from slog attrs, got %v", entry["action"])
+	}
+}
+
+func TestStdLoggerBridge(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+
+	stdLog := l.StdLogger(WARNING)
+	stdLog.Println("from stdlib")
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["level"] != "WARNING" {
+		t.Errorf("expected level=WARNING, got %v", entry["level"])
+	}
+	msg, _ := entry["message"].(string)
+	if !strings.Contains(msg, "from stdlib") {
+		t.Errorf("expected message containing 'from stdlib', got %v", msg)
 	}
 }

@@ -3,8 +3,10 @@ package logger
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"runtime"
 	"strings"
@@ -67,6 +69,7 @@ type Logger struct {
 	sampler        Sampler
 	fullCallerPath bool
 	eventID        bool
+	writeErrors    atomic.Int64
 }
 
 // New creates a root Logger that writes to out and discards
@@ -85,6 +88,12 @@ func New(out io.Writer, minLevel Level, opts ...Option) *Logger {
 	return l
 }
 
+// Nop returns a logger that discards all output. Useful as a safe
+// default in tests or when a logger is required but no output is wanted.
+func Nop() *Logger {
+	return New(io.Discard, FATAL+1)
+}
+
 // SetLevel atomically updates the minimum log level.
 // On child loggers, this changes the root logger's level.
 func (l *Logger) SetLevel(level Level) {
@@ -94,6 +103,12 @@ func (l *Logger) SetLevel(level Level) {
 // GetLevel atomically returns the current minimum log level.
 func (l *Logger) GetLevel() Level {
 	return Level(l.root().minLevel.Load())
+}
+
+// WriteErrorCount returns the number of times the underlying writer
+// returned an error. Useful for monitoring sink health.
+func (l *Logger) WriteErrorCount() int64 {
+	return l.root().writeErrors.Load()
 }
 
 // Sync flushes any buffered log data to the underlying writer and
@@ -114,6 +129,20 @@ func (l *Logger) Sync() error {
 		return s.Sync()
 	}
 	return nil
+}
+
+// SyncWithTimeout is like Sync but returns an error if the flush
+// doesn't complete within the given duration. Useful when the
+// underlying sink may be slow or unreachable.
+func (l *Logger) SyncWithTimeout(d time.Duration) error {
+	done := make(chan error, 1)
+	go func() { done <- l.Sync() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(d):
+		return errors.New("logger: sync timed out")
+	}
 }
 
 // root returns the root logger. Since With() flattens the chain,
@@ -164,6 +193,40 @@ func generateEventID() string {
 	ts := time.Now().UnixNano()
 	seq := eventCounter.Add(1)
 	return fmt.Sprintf("%x-%x", ts, seq)
+}
+
+// resolveLogValuers scans fields for values implementing slog.LogValuer
+// and replaces them with their resolved values. This enables PII types
+// that control their own log representation. Resolves recursively up to
+// a depth of 10 to prevent infinite loops.
+func resolveLogValuers(fields map[string]any) map[string]any {
+	if len(fields) == 0 {
+		return fields
+	}
+	var resolved map[string]any
+	for k, v := range fields {
+		if lv, ok := v.(slog.LogValuer); ok {
+			if resolved == nil {
+				resolved = make(map[string]any, len(fields))
+				for fk, fv := range fields {
+					resolved[fk] = fv
+				}
+			}
+			val := lv.LogValue()
+			for i := 0; i < 10; i++ {
+				if inner, ok := val.Any().(slog.LogValuer); ok {
+					val = inner.LogValue()
+				} else {
+					break
+				}
+			}
+			resolved[k] = val.Any()
+		}
+	}
+	if resolved != nil {
+		return resolved
+	}
+	return fields
 }
 
 // mergeFields combines two field maps. Overlay keys take precedence.
@@ -273,6 +336,7 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 		entry["event_id"] = generateEventID()
 	}
 
+	fields = resolveLogValuers(fields)
 	fields = enrichErrors(fields)
 
 	for k, v := range fields {
@@ -297,7 +361,9 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	defer r.mu.Unlock()
 
 	data = append(data, '\n')
-	_, _ = r.out.Write(data)
+	if _, err := r.out.Write(data); err != nil {
+		r.writeErrors.Add(1)
+	}
 
 	if hooks := r.hooks; len(hooks) > 0 {
 		for _, hook := range hooks {
@@ -309,6 +375,11 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	}
 
 	if level == FATAL {
+		// Flush async-buffered logs before exiting. We're already holding
+		// the mutex so call Sync on the writer directly (not l.Sync()).
+		if s, ok := r.out.(Syncer); ok {
+			_ = s.Sync()
+		}
 		r.exitFunc(1)
 	}
 }
