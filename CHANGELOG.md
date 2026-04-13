@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-12
+
+### Added
+- `FromContext()` / `WithLogger()` for storing and retrieving loggers from `context.Context`
+- `Default()` / `SetDefault()` / `ReplaceDefault()` global default logger with lazy initialization
+- `FromContext()` falls back to `Default()` when no logger is in the context
+- `StdLogger(level)` method for bridging to stdlib's `*log.Logger`
+- `WriteErrorCount()` for monitoring failed writes to the output sink
+- `Group()` typed field constructor for nested JSON structures
+- `KeyMap` field on `JSONFormatter` and `TextFormatter` for remapping core field names
+- `GCPKeyMap` preset for Google Cloud Logging compatibility (`level`→`severity`, `message`→`textPayload`)
+- `WithEnvConfig()` option to read `LOG_LEVEL` and `LOG_FORMAT` from environment variables
+- `SyncWithTimeout(d)` for deadline-aware flush when sinks may be slow or unreachable
+- `slog.LogValuer` support — field values implementing `LogValuer` are resolved before serialization, enabling PII redaction and lazy evaluation
+- `Nop()` logger that discards all output, safe for tests and defaults
+- Testable `Example` functions for pkg.go.dev documentation (14 examples)
+- Benchmarks (11) and stress tests (7) with `BENCHMARKS.md` documentation
+
+### Fixed
+- `Fatal` now calls `Sync` on the underlying writer before exiting, preventing loss of async-buffered logs
+- `TextFormatter` escapes `\n` and `\r` in messages and field values, preventing log injection
+- Lint compliance with golangci-lint v2 (errcheck on `os.Setenv`, `os.Remove`, `Sync`)
+
 ## [0.1.0] - 2026-04-12
 
 ### Added
@@ -37,5 +60,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - JSON injection in marshal-failure fallback path (now uses `json.Marshal`)
 - Portuguese fallback error message replaced with English
 
-[Unreleased]: https://github.com/adamjohannes/log-it/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/adamjohannes/log-it/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/adamjohannes/log-it/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/adamjohannes/log-it/releases/tag/v0.1.0
