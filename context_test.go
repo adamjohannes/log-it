@@ -29,10 +29,10 @@ func TestWithLoggerAndFromContext(t *testing.T) {
 	}
 }
 
-func TestFromContextEmptyReturnsNil(t *testing.T) {
+func TestFromContextEmptyFallsBackToDefault(t *testing.T) {
 	got := FromContext(context.Background())
-	if got != nil {
-		t.Error("expected nil from empty context")
+	if got == nil {
+		t.Error("expected non-nil default logger from empty context")
 	}
 }
 

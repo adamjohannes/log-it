@@ -12,10 +12,12 @@ func WithLogger(ctx context.Context, l *Logger) context.Context {
 }
 
 // FromContext retrieves the Logger stored by WithLogger.
-// Returns nil if no logger is found in the context.
+// If no logger is found in the context (or ctx is nil), returns Default().
 func FromContext(ctx context.Context) *Logger {
-	if l, ok := ctx.Value(loggerKey{}).(*Logger); ok {
-		return l
+	if ctx != nil {
+		if l, ok := ctx.Value(loggerKey{}).(*Logger); ok {
+			return l
+		}
 	}
-	return nil
+	return Default()
 }
