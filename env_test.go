@@ -3,13 +3,11 @@ package logger
 import (
 	"bytes"
 	"encoding/json"
-	"os"
 	"testing"
 )
 
 func TestWithEnvConfigLevel(t *testing.T) {
-	os.Setenv("LOG_LEVEL", "error")
-	defer os.Unsetenv("LOG_LEVEL")
+	t.Setenv("LOG_LEVEL", "error")
 
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG, WithEnvConfig())
@@ -25,8 +23,7 @@ func TestWithEnvConfigLevel(t *testing.T) {
 }
 
 func TestWithEnvConfigFormat(t *testing.T) {
-	os.Setenv("LOG_FORMAT", "text")
-	defer os.Unsetenv("LOG_FORMAT")
+	t.Setenv("LOG_FORMAT", "text")
 
 	var buf bytes.Buffer
 	l := New(&buf, DEBUG, WithEnvConfig())
@@ -40,8 +37,8 @@ func TestWithEnvConfigFormat(t *testing.T) {
 }
 
 func TestWithEnvConfigUnset(t *testing.T) {
-	os.Unsetenv("LOG_LEVEL")
-	os.Unsetenv("LOG_FORMAT")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("LOG_FORMAT", "")
 
 	var buf bytes.Buffer
 	l := New(&buf, INFO, WithEnvConfig())
@@ -61,8 +58,7 @@ func TestWithEnvConfigUnset(t *testing.T) {
 }
 
 func TestWithEnvConfigWarnAlias(t *testing.T) {
-	os.Setenv("LOG_LEVEL", "warn")
-	defer os.Unsetenv("LOG_LEVEL")
+	t.Setenv("LOG_LEVEL", "warn")
 
 	l := New(&bytes.Buffer{}, DEBUG, WithEnvConfig())
 	if l.GetLevel() != WARNING {
@@ -71,8 +67,7 @@ func TestWithEnvConfigWarnAlias(t *testing.T) {
 }
 
 func TestWithEnvConfigCaseInsensitive(t *testing.T) {
-	os.Setenv("LOG_LEVEL", "DEBUG")
-	defer os.Unsetenv("LOG_LEVEL")
+	t.Setenv("LOG_LEVEL", "DEBUG")
 
 	l := New(&bytes.Buffer{}, ERROR, WithEnvConfig())
 	if l.GetLevel() != DEBUG {
