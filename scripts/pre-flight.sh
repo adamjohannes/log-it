@@ -69,6 +69,19 @@ else
     fail "build failed"
 fi
 
+# ─── Cross-compilation (CI runs on Linux) ────────────────────────
+step "Cross-compile for CI targets"
+cross_ok=true
+for target_os in linux darwin windows; do
+    if ! GOOS=$target_os GOARCH=amd64 go build ./... 2>&1; then
+        fail "cross-compile failed for GOOS=$target_os"
+        cross_ok=false
+    fi
+done
+if [[ "$cross_ok" == true ]]; then
+    ok "cross-compile succeeded (linux, darwin, windows)"
+fi
+
 # ─── Vet ─────────────────────────────────────────────────────────
 step "go vet"
 if go vet ./... 2>&1; then
