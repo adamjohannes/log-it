@@ -174,6 +174,91 @@ func applyKeyMap(entry map[string]any, keyMap map[string]string) map[string]any 
 	return remapped
 }
 
+// LogfmtFormatter serializes entries as logfmt key=value pairs.
+// Compatible with Grafana Loki, Heroku, and other logfmt-aware systems.
+//
+// Output format:
+//
+//	time=2026-04-12T14:32:07Z level=INFO message="request handled" status=200 user_id=42
+type LogfmtFormatter struct {
+	// KeyMap remaps core field names before serialization.
+	KeyMap map[string]string
+}
+
+// Format renders the entry as a single line of logfmt key=value pairs.
+// Values containing spaces, quotes, or control characters are quoted.
+func (f LogfmtFormatter) Format(entry map[string]any) ([]byte, error) {
+	if len(f.KeyMap) > 0 {
+		entry = applyKeyMap(entry, f.KeyMap)
+	}
+
+	buf := bufPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	defer bufPool.Put(buf)
+
+	// Write core keys first in a stable order, then remaining sorted
+	coreOrder := []string{"time", "level", "message", "file"}
+	written := make(map[string]struct{}, len(coreOrder))
+
+	for _, k := range coreOrder {
+		if v, ok := entry[k]; ok {
+			if buf.Len() > 0 {
+				buf.WriteByte(' ')
+			}
+			appendLogfmtPair(buf, k, v)
+			written[k] = struct{}{}
+		}
+	}
+
+	var extraKeys []string
+	for k := range entry {
+		if _, ok := written[k]; !ok {
+			extraKeys = append(extraKeys, k)
+		}
+	}
+	sort.Strings(extraKeys)
+
+	for _, k := range extraKeys {
+		if buf.Len() > 0 {
+			buf.WriteByte(' ')
+		}
+		appendLogfmtPair(buf, k, entry[k])
+	}
+
+	result := make([]byte, buf.Len())
+	copy(result, buf.Bytes())
+	return result, nil
+}
+
+// appendLogfmtPair writes key=value to buf, quoting the value if needed.
+func appendLogfmtPair(buf *bytes.Buffer, key string, val any) {
+	buf.WriteString(key)
+	buf.WriteByte('=')
+
+	s := fmt.Sprintf("%v", val)
+	if needsLogfmtQuoting(s) {
+		buf.WriteByte('"')
+		buf.WriteString(strings.ReplaceAll(s, `"`, `\"`))
+		buf.WriteByte('"')
+	} else {
+		buf.WriteString(s)
+	}
+}
+
+// needsLogfmtQuoting reports whether s must be quoted in logfmt.
+func needsLogfmtQuoting(s string) bool {
+	if s == "" {
+		return true
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c <= ' ' || c == '"' || c == '=' || c == '\\' {
+			return true
+		}
+	}
+	return false
+}
+
 // GCPKeyMap is a key remapping preset for Google Cloud Logging compatibility.
 var GCPKeyMap = map[string]string{
 	"level":   "severity",

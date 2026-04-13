@@ -312,3 +312,97 @@ func TestAutoFormatUnwrapsAsyncWriter(t *testing.T) {
 		t.Errorf("expected message=unwrapped, got %v", entries[0]["message"])
 	}
 }
+
+// --- Logfmt formatter tests ---
+
+func TestLogfmtFormatterBasic(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("hello", map[string]any{"status": 200, "user": "alice"})
+
+	output := buf.String()
+	// Should contain key=value pairs
+	if !strings.Contains(output, "level=INFO") {
+		t.Errorf("expected level=INFO, got: %s", output)
+	}
+	if !strings.Contains(output, "message=hello") {
+		t.Errorf("expected message=hello, got: %s", output)
+	}
+	if !strings.Contains(output, "status=200") {
+		t.Errorf("expected status=200, got: %s", output)
+	}
+	if !strings.Contains(output, "user=alice") {
+		t.Errorf("expected user=alice, got: %s", output)
+	}
+	// Should be a single line (entry + newline from writeEntry)
+	lines := strings.Count(output, "\n")
+	if lines != 1 {
+		t.Errorf("expected 1 line, got %d: %s", lines, output)
+	}
+}
+
+func TestLogfmtFormatterQuotesSpaces(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("spaced message", map[string]any{"path": "/api/v1/users"})
+
+	output := buf.String()
+	// Message with spaces should be quoted
+	if !strings.Contains(output, `message="spaced message"`) {
+		t.Errorf("expected quoted message, got: %s", output)
+	}
+	// Path without spaces should not be quoted
+	if !strings.Contains(output, "path=/api/v1/users") {
+		t.Errorf("expected unquoted path, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterQuotesEmptyValue(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("test", map[string]any{"empty": ""})
+
+	output := buf.String()
+	if !strings.Contains(output, `empty=""`) {
+		t.Errorf("expected quoted empty value, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterEscapesQuotes(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("test", map[string]any{"val": `say "hi"`})
+
+	output := buf.String()
+	if !strings.Contains(output, `val="say \"hi\""`) {
+		t.Errorf("expected escaped quotes, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterKeyMap(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{
+		KeyMap: map[string]string{"level": "severity"},
+	}))
+	l.Info("remapped", nil)
+
+	output := buf.String()
+	if !strings.Contains(output, "severity=INFO") {
+		t.Errorf("expected severity=INFO, got: %s", output)
+	}
+	if strings.Contains(output, "level=") {
+		t.Errorf("expected level key to be remapped, got: %s", output)
+	}
+}
+
+func TestLogfmtFormatterCoreKeysFirst(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(LogfmtFormatter{}))
+	l.Info("order", map[string]any{"zebra": 1, "alpha": 2})
+
+	output := strings.TrimRight(buf.String(), "\n")
+	// time should come first, then level, then message
+	if !strings.HasPrefix(output, "time=") {
+		t.Errorf("expected output to start with time=, got: %s", output)
+	}
+}
