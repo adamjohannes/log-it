@@ -72,6 +72,7 @@ type Logger struct {
 	fullCallerPath bool
 	eventID        bool
 	writeErrors    atomic.Int64
+	fallbackWriter io.Writer
 }
 
 // New creates a root Logger that writes to out and discards
@@ -370,6 +371,9 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 
 	if _, err := r.out.Write(writeBuf.Bytes()); err != nil {
 		r.writeErrors.Add(1)
+		if r.fallbackWriter != nil {
+			_, _ = r.fallbackWriter.Write(writeBuf.Bytes())
+		}
 	}
 	bufPool.Put(writeBuf)
 

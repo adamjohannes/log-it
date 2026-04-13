@@ -1,6 +1,9 @@
 package logger
 
-import "os"
+import (
+	"io"
+	"os"
+)
 
 // Option configures a root Logger.
 type Option func(*Logger)
@@ -85,4 +88,12 @@ func WithFullCallerPath() Option {
 // for every log entry, useful for deduplication in log pipelines.
 func WithEventID() Option {
 	return func(l *Logger) { l.eventID = true }
+}
+
+// WithFallbackWriter sets a fallback destination for log entries when
+// the primary writer fails. This prevents log loss during incidents
+// where the primary sink (file, network) is unavailable. The write
+// error counter is still incremented on primary failure.
+func WithFallbackWriter(w io.Writer) Option {
+	return func(l *Logger) { l.fallbackWriter = w }
 }

@@ -1812,3 +1812,47 @@ func TestNopSafeForAllMethods(t *testing.T) {
 
 	// If we got here, all methods are safe on Nop.
 }
+
+// --- Fallback writer tests ---
+
+func TestFallbackWriterReceivesEntryOnPrimaryFailure(t *testing.T) {
+	primary := &testErrWriter{}
+	var fallback bytes.Buffer
+	l := New(primary, INFO, WithFallbackWriter(&fallback))
+
+	l.Info("rescued", map[string]any{"key": "val"})
+
+	if fallback.Len() == 0 {
+		t.Fatal("expected fallback to receive the log entry")
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimRight(fallback.Bytes(), "\n"), &entry); err != nil {
+		t.Fatalf("fallback output not valid JSON: %v", err)
+	}
+	if entry["message"] != "rescued" {
+		t.Errorf("expected message=rescued, got %v", entry["message"])
+	}
+}
+
+func TestFallbackWriterNilIsNoop(t *testing.T) {
+	primary := &testErrWriter{}
+	l := New(primary, INFO)
+
+	l.Info("dropped", nil)
+
+	if l.WriteErrorCount() != 1 {
+		t.Errorf("expected writeErrors=1, got %d", l.WriteErrorCount())
+	}
+}
+
+func TestFallbackWriterBothFail(t *testing.T) {
+	primary := &testErrWriter{}
+	fallback := &testErrWriter{}
+	l := New(primary, INFO, WithFallbackWriter(fallback))
+
+	l.Info("lost", nil) // should not panic
+
+	if l.WriteErrorCount() != 1 {
+		t.Errorf("expected writeErrors=1, got %d", l.WriteErrorCount())
+	}
+}
