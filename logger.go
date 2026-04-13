@@ -88,6 +88,12 @@ func New(out io.Writer, minLevel Level, opts ...Option) *Logger {
 	return l
 }
 
+// Nop returns a logger that discards all output. Useful as a safe
+// default in tests or when a logger is required but no output is wanted.
+func Nop() *Logger {
+	return New(io.Discard, FATAL+1)
+}
+
 // SetLevel atomically updates the minimum log level.
 // On child loggers, this changes the root logger's level.
 func (l *Logger) SetLevel(level Level) {

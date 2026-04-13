@@ -1708,3 +1708,50 @@ func TestLogValuerNotTriggeredOnPlainValues(t *testing.T) {
 		t.Errorf("expected name=alice, got %v", entry["name"])
 	}
 }
+
+// --- Nop logger ---
+
+func TestNopProducesNoOutput(t *testing.T) {
+	l := Nop()
+	l.Trace("nope", nil)
+	l.Debug("nope", nil)
+	l.Info("nope", nil)
+	l.Warning("nope", nil)
+	l.Error("nope", nil)
+	// No way to check io.Discard wrote nothing, but no panic = pass
+}
+
+func TestNopSafeForAllMethods(t *testing.T) {
+	l := Nop()
+
+	// Structured
+	l.Trace("a", map[string]any{"k": "v"})
+	l.Info("a", nil)
+	l.Warning("a", nil)
+	l.Error("a", nil)
+
+	// Formatted
+	l.Tracef("a %d", 1)
+	l.Infof("a %d", 1)
+	l.Errorf("a %d", 1)
+
+	// Typed
+	l.Infow("a", String("k", "v"))
+	l.Errorw("a", Err(errors.New("test")))
+
+	// Context
+	l.InfoContext(context.Background(), "a", nil)
+
+	// Timing
+	done := l.Timed("op")
+	done()
+
+	// Child
+	child := l.With(map[string]any{"c": true})
+	child.Info("child", nil)
+
+	// Sync
+	_ = l.Sync()
+
+	// If we got here, all methods are safe on Nop.
+}
