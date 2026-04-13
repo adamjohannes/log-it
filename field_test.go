@@ -201,3 +201,49 @@ func TestTypedFieldsWithChildLogger(t *testing.T) {
 		t.Errorf("expected path=/health, got %v", entry["path"])
 	}
 }
+
+func TestGroupFieldProducesNestedJSON(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Infow("request",
+		Group("http",
+			String("method", "GET"),
+			Int("status", 200),
+		),
+	)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+
+	httpGroup, ok := entry["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected http to be a nested object, got %T: %v", entry["http"], entry["http"])
+	}
+	if httpGroup["method"] != "GET" {
+		t.Errorf("expected http.method=GET, got %v", httpGroup["method"])
+	}
+	if httpGroup["status"] != float64(200) {
+		t.Errorf("expected http.status=200, got %v", httpGroup["status"])
+	}
+}
+
+func TestGroupFieldEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG)
+	l.Infow("empty-group", Group("meta"))
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+
+	meta, ok := entry["meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected meta to be a nested object, got %T", entry["meta"])
+	}
+	if len(meta) != 0 {
+		t.Errorf("expected empty group, got %v", meta)
+	}
+}

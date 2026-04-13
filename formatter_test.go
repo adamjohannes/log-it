@@ -127,3 +127,87 @@ func TestColorizeAllLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestTextFormatterSanitizesNewlines(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	l.Info("test", map[string]any{"evil": "line1\nfake-line2\rcarriage"})
+
+	output := buf.String()
+	lines := strings.Count(output, "\n")
+	// Should be exactly 1 newline (the trailing newline from writeEntry)
+	if lines != 1 {
+		t.Errorf("expected 1 line, got %d lines — log injection possible:\n%s", lines, output)
+	}
+	if !strings.Contains(output, `line1\nfake-line2\rcarriage`) {
+		t.Errorf("expected escaped control chars in output: %s", output)
+	}
+}
+
+func TestTextFormatterSanitizesMessage(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{NoColor: true}))
+	l.Info("msg\ninjected line", nil)
+
+	output := buf.String()
+	lines := strings.Count(output, "\n")
+	if lines != 1 {
+		t.Errorf("expected 1 line for sanitized message, got %d:\n%s", lines, output)
+	}
+}
+
+// --- KeyMap remapping tests ---
+
+func TestJSONFormatterKeyMap(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(JSONFormatter{
+		KeyMap: map[string]string{"level": "severity", "message": "msg"},
+	}))
+	l.Info("remapped", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["severity"] != "INFO" {
+		t.Errorf("expected severity=INFO, got %v", entry["severity"])
+	}
+	if entry["msg"] != "remapped" {
+		t.Errorf("expected msg=remapped, got %v", entry["msg"])
+	}
+	if _, exists := entry["level"]; exists {
+		t.Error("expected 'level' key to be remapped away")
+	}
+}
+
+func TestGCPKeyMapPreset(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(JSONFormatter{KeyMap: GCPKeyMap}))
+	l.Info("gcp-test", nil)
+
+	var entry map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["severity"] != "INFO" {
+		t.Errorf("expected severity=INFO, got %v", entry["severity"])
+	}
+	if entry["textPayload"] != "gcp-test" {
+		t.Errorf("expected textPayload=gcp-test, got %v", entry["textPayload"])
+	}
+}
+
+func TestTextFormatterKeyMap(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf, DEBUG, WithFormatter(TextFormatter{
+		NoColor: true,
+		KeyMap:  map[string]string{"level": "severity"},
+	}))
+	l.Info("test", nil)
+
+	// TextFormatter with KeyMap should still produce readable output
+	output := buf.String()
+	if !strings.Contains(output, "test") {
+		t.Errorf("expected message in output: %s", output)
+	}
+}

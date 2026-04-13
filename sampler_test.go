@@ -106,7 +106,7 @@ func TestSamplerContextMethodsRespected(t *testing.T) {
 	l := New(&buf, DEBUG, WithSampler(NewEveryNSampler(5)))
 
 	for i := 0; i < 10; i++ {
-		l.InfoContext(nil, "ctx-msg", nil)
+		l.InfoContext(nil, "ctx-msg", nil) //nolint:staticcheck // deliberately testing nil context
 	}
 
 	entries := decodeAllEntriesSampler(t, &buf)

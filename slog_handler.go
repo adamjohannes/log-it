@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"log"
 	"log/slog"
 	"runtime"
 )
@@ -106,6 +107,26 @@ func slogLevelToLevel(l slog.Level) Level {
 	}
 }
 
+// levelToSlogLevel maps our Level type to slog levels.
+func levelToSlogLevel(l Level) slog.Level {
+	switch l {
+	case TRACE:
+		return slog.LevelDebug - 4
+	case DEBUG:
+		return slog.LevelDebug
+	case INFO:
+		return slog.LevelInfo
+	case WARNING:
+		return slog.LevelWarn
+	case ERROR:
+		return slog.LevelError
+	case FATAL:
+		return slog.LevelError + 4
+	default:
+		return slog.LevelInfo
+	}
+}
+
 // itoa is a simple int-to-string without importing strconv.
 func itoa(i int) string {
 	if i < 0 {
@@ -115,4 +136,11 @@ func itoa(i int) string {
 		return string(rune('0' + i))
 	}
 	return itoa(i/10) + string(rune('0'+i%10))
+}
+
+// StdLogger returns a *log.Logger that routes writes through this
+// logger at the specified level. Useful for bridging libraries that
+// accept the standard library's *log.Logger.
+func (l *Logger) StdLogger(level Level) *log.Logger {
+	return slog.NewLogLogger(NewSlogHandler(l), levelToSlogLevel(level))
 }
