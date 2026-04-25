@@ -6,12 +6,6 @@ import (
 	"io"
 )
 
-// Syncer is implemented by writers that can flush buffered data.
-// *os.File naturally satisfies this interface.
-type Syncer interface {
-	Sync() error
-}
-
 // FanOutWriter duplicates each Write call to all underlying writers.
 // It implements io.Writer and Syncer.
 type FanOutWriter struct {

@@ -31,23 +31,3 @@ func WithEnvConfig() Option {
 		}
 	}
 }
-
-// parseLevel converts a string to a Level. Case-insensitive.
-func parseLevel(s string) (Level, bool) {
-	switch strings.ToLower(s) {
-	case "trace":
-		return TRACE, true
-	case "debug":
-		return DEBUG, true
-	case "info":
-		return INFO, true
-	case "warning", "warn":
-		return WARNING, true
-	case "error":
-		return ERROR, true
-	case "fatal":
-		return FATAL, true
-	default:
-		return INFO, false
-	}
-}
