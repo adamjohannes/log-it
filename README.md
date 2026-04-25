@@ -38,40 +38,15 @@ func main() {
 
 ## Features
 
-- **6 log levels**: `TRACE`, `DEBUG`, `INFO`, `WARNING`, `ERROR`, `FATAL`
-- **4 logging styles**: structured (map), formatted (printf), context-aware, typed fields
-- **Flat JSON output**: fields at top level for observability platform compatibility
-- **3 formatters**: JSON (default), human-readable text with ANSI colors, logfmt for Loki
-- **Child loggers**: `With()` for persistent fields, shared writer/mutex/level
-- **Context propagation**: extract trace IDs, request IDs from `context.Context`
-- **Service identity**: auto-attach `service`, `version`, `env`, `host` to every entry
-- **Async buffered writes**: non-blocking channel with lossy back-pressure
-- **Fan-out writer**: broadcast to multiple destinations simultaneously
-- **Filtered writer**: per-sink level filtering for routing levels to different destinations
-- **Sampling / rate limiting**: prevent log storms from overwhelming sinks
-- **Hooks**: post-write callbacks for alerting, metrics, side effects
-- **Pre-write middleware**: transform, enrich, or filter entries before writing
-- **Field-name redaction**: `WithRedactFields("password", "token")` for PII compliance
-- **Error enrichment**: auto-detect `error` values, add `_type` and `_chain` fields
-- **Stack traces**: opt-in stack capture for ERROR/FATAL via `WithStackTrace()`
-- **Caller information**: opt-in file/line via `WithCaller()` (off by default for performance)
-- **Fallback writer**: `WithFallbackWriter()` for resilient logging when primary sink fails
-- **Auto-format detection**: `WithAutoFormat()` selects JSON or colored text based on terminal
-- **`log/slog` integration**: `slog.Handler` adapter; `SetDefault()` syncs with `slog.SetDefault()`
-- **`Interface` type**: minimal interface for dependency injection and test doubles
-- **Timing helpers**: `Timed()` / `TimedContext()` for defer-friendly duration logging
-- **Event IDs**: unique per-entry IDs for pipeline deduplication
-- **Graceful shutdown**: `Sync()` and `SyncWithTimeout()` flush all buffered entries before exit
-- **Context-based logger passing**: `WithLogger()` / `FromContext()` for request-scoped propagation
-- **Global default logger**: `Default()` / `SetDefault()` with lazy initialization
-- **`*log.Logger` bridge**: `StdLogger()` for stdlib interop
-- **`slog.LogValuer` support**: PII redaction and lazy field evaluation
-- **Cloud provider remapping**: `GCPKeyMap`, `DatadogKeyMap`, `ELKKeyMap` presets
-- **Environment variable config**: `WithEnvConfig()` reads `LOG_LEVEL` and `LOG_FORMAT`
-- **Write error monitoring**: `WriteErrorCount()` tracks failed writes
-- **Nested field groups**: `Group()` constructor for hierarchical JSON
-- **Nop logger**: `Nop()` for safe discard in tests
-- **Test helpers**: `logtest` subpackage with `TestHandler`, `NewTestLogger`, assertion helpers
+**Logging** — 6 levels (`TRACE` through `FATAL`), 4 styles (map, printf, context-aware, typed fields), child loggers with persistent fields, context extraction for trace/request IDs
+
+**Output** — 3 formatters (JSON, text with ANSI colors, logfmt), auto-format terminal detection, cloud key remapping (`GCPKeyMap`, `DatadogKeyMap`, `ELKKeyMap`), env variable config (`LOG_LEVEL`, `LOG_FORMAT`)
+
+**Writers** — async buffered (non-blocking, lossy back-pressure), fan-out (multi-destination), filtered (per-sink level routing), fallback (resilient writes), composable
+
+**Pipeline** — pre-write middleware, post-write hooks, field redaction, sampling/rate limiting, error enrichment (`_type`, `_chain`)
+
+**Integrations & Utilities** — `slog.Handler` adapter, `*log.Logger` bridge, `Interface` for DI, timing helpers, event IDs, stack traces, caller info, nop logger, `logtest` subpackage, graceful shutdown, context-based logger passing, global default, write error monitoring
 
 ## Logging Styles
 
@@ -106,14 +81,16 @@ log.Infow("request handled",
     logger.Int("status", 200),
     logger.Float64("latency_ms", 12.5),
     logger.Duration("elapsed", 350*time.Millisecond),
-    logger.Bool("cached", true),
-    logger.Err(err),
+    logger.Group("user",
+        logger.String("id", "u-42"),
+        logger.String("role", "admin"),
+    ),
 )
 ```
 
 Available constructors: `String`, `Int`, `Int64`, `Float64`, `Bool`, `Err`, `Duration`, `Any`, `Group`.
 
-## Child Loggers
+## Child Loggers & Context
 
 ```go
 // Persistent fields attached to every entry
@@ -122,13 +99,11 @@ reqLog := log.With(map[string]any{
     "user_id":    42,
 })
 reqLog.Info("processing", nil)
-// Output includes request_id and user_id automatically
 ```
 
-## Context Extraction
+Extract fields from `context.Context` automatically:
 
 ```go
-log := logger.New(os.Stdout, logger.INFO)
 log = log.WithContextExtractor(func(ctx context.Context) map[string]any {
     if traceID := ctx.Value("trace_id"); traceID != nil {
         return map[string]any{"trace_id": traceID}
@@ -139,6 +114,8 @@ log = log.WithContextExtractor(func(ctx context.Context) map[string]any {
 log.InfoContext(ctx, "handled", nil)
 // trace_id auto-extracted from context
 ```
+
+Store and retrieve loggers via context with `WithLogger()` / `FromContext()`.
 
 ## Configuration Options
 
@@ -224,17 +201,7 @@ log := logger.New(async, logger.INFO,
 defer log.Sync() // drains async -> syncs fan-out -> fsyncs file
 ```
 
-### Fallback Writer
-
-When the primary writer fails (disk full, network down), a fallback writer prevents log loss:
-
-```go
-log := logger.New(primaryWriter, logger.INFO,
-    logger.WithFallbackWriter(os.Stderr),
-)
-```
-
-The write error counter is still incremented on primary failure.
+Use `WithFallbackWriter(os.Stderr)` for resilient logging when the primary sink fails.
 
 ## Formatters
 
@@ -243,6 +210,16 @@ The write error counter is still incremented on primary failure.
 ```json
 {"level":"INFO","message":"request","method":"GET","status":200,"time":"2026-04-12T14:32:07.123Z"}
 ```
+
+Remap field names for cloud platforms with built-in presets:
+
+```go
+logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.GCPKeyMap})     // "level" -> "severity"
+logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.DatadogKeyMap}) // "level" -> "status"
+logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.ELKKeyMap})     // "time" -> "@timestamp"
+```
+
+All formatters (`JSONFormatter`, `TextFormatter`, `LogfmtFormatter`) support `KeyMap`.
 
 ### Text (for development)
 
@@ -256,7 +233,7 @@ log := logger.New(os.Stdout, logger.DEBUG,
 )
 ```
 
-Set `NoColor: true` to disable ANSI color codes (e.g., for file output). ANSI escape sequences in field values are automatically stripped.
+Set `NoColor: true` to disable ANSI color codes. ANSI escape sequences in field values are automatically stripped.
 
 ### Logfmt (for Loki)
 
@@ -270,8 +247,6 @@ log := logger.New(os.Stdout, logger.INFO,
 )
 ```
 
-Compatible with Grafana Loki, Heroku, and other logfmt-aware systems. Values with spaces or special characters are automatically quoted.
-
 ### Auto-Format Detection
 
 Automatically selects colored text for terminals, JSON otherwise:
@@ -280,155 +255,26 @@ Automatically selects colored text for terminals, JSON otherwise:
 log := logger.New(os.Stderr, logger.INFO, logger.WithAutoFormat())
 ```
 
-Works through writer wrappers (`AsyncWriter`, `FanOutWriter`, `FilteredWriter`) — they implement `Unwrap()` so terminal detection sees through to the underlying `*os.File`.
+Works through writer wrappers — they implement `Unwrap()` so terminal detection sees through to the underlying `*os.File`.
 
-## Middleware
+## Middleware & Hooks
 
-Middleware runs before an entry is written. Use it to enrich, transform, or filter entries.
+Middleware runs before writing. Return `nil` to drop the entry.
 
 ```go
-// Add hostname to every entry
-addHost := func(entry map[string]any) map[string]any {
-    entry["hostname"] = "server-1"
-    return entry
-}
-
-// Drop health check logs
 dropHealth := func(entry map[string]any) map[string]any {
     if msg, _ := entry["message"].(string); msg == "health check" {
-        return nil // returning nil drops the entry
+        return nil
     }
     return entry
 }
 
 log := logger.New(os.Stdout, logger.INFO,
-    logger.WithMiddleware(addHost, dropHealth),
+    logger.WithMiddleware(dropHealth),
 )
 ```
 
-Middleware runs in order. Return `nil` to drop the entry (it won't be written or trigger hooks).
-
-## Field Redaction
-
-Redact sensitive fields by name:
-
-```go
-log := logger.New(os.Stdout, logger.INFO,
-    logger.WithRedactFields("password", "token", "secret"),
-)
-
-log.Info("login", map[string]any{"user": "alice", "password": "s3cret"})
-// Output: "password":"[REDACTED]", "user":"alice"
-```
-
-Redaction applies recursively to nested maps (Group fields). For a custom replacement string:
-
-```go
-logger.WithRedactFieldsFunc("***", "password", "token")
-```
-
-For type-level control, implement `slog.LogValuer`:
-
-```go
-type Email string
-
-func (e Email) LogValue() slog.Value {
-    return slog.StringValue("[REDACTED]")
-}
-
-log.Info("user", map[string]any{"email": Email("alice@example.com")})
-// Output: "email":"[REDACTED]"
-```
-
-## Sampling
-
-Prevent log storms from overwhelming sinks. ERROR and FATAL are **never** sampled.
-
-```go
-// Log every 10th entry per level
-log := logger.New(os.Stdout, logger.DEBUG,
-    logger.WithSampler(logger.NewEveryNSampler(10)),
-)
-
-// Or: max 100 entries per second per level
-log := logger.New(os.Stdout, logger.DEBUG,
-    logger.WithSampler(logger.NewRateSampler(100)),
-)
-```
-
-## slog Integration
-
-Use as a backend for Go's standard `log/slog`:
-
-```go
-log := logger.New(os.Stdout, logger.DEBUG)
-slogLogger := slog.New(logger.NewSlogHandler(log))
-
-slogLogger.Info("from slog", "user", "alice", "count", 42)
-// Routed through log-it with full feature support (hooks, formatting, etc.)
-```
-
-`SetDefault()` automatically syncs with `slog.SetDefault()`, so any code using `slog` directly gets routed through your logger.
-
-## Caller Information
-
-Caller capture is opt-in because `runtime.Caller` has a measurable cost (~300-600ns per call):
-
-```go
-log := logger.New(os.Stdout, logger.INFO, logger.WithCaller())
-log.Info("with source", nil)
-// Output includes: "file":"main.go:12"
-```
-
-For full file paths instead of basename:
-
-```go
-logger.WithFullCallerPath() // implies WithCaller()
-```
-
-## Stack Traces
-
-Opt-in stack trace capture for ERROR and FATAL entries:
-
-```go
-log := logger.New(os.Stdout, logger.INFO, logger.WithStackTrace())
-log.Error("db timeout", nil)
-// Output includes: "stacktrace":"main.main\n\t/app/main.go:15\n..."
-```
-
-Disabled by default due to ~5μs cost of `runtime.Callers`.
-
-## Timing Helpers
-
-```go
-done := log.Timed("db_query")
-defer done()
-// Logs: {"level":"INFO","message":"db_query","duration_ms":12.345,...}
-```
-
-With context extraction:
-
-```go
-done := log.TimedContext(ctx, "http_request")
-defer done()
-```
-
-## Error Enrichment
-
-When a field value implements the `error` interface, the logger automatically adds:
-- `<key>`: the error message string
-- `<key>_type`: the concrete error type (e.g., `*os.PathError`)
-- `<key>_chain`: the unwrap chain (only if the error is wrapped)
-
-```go
-err := fmt.Errorf("query failed: %w", sql.ErrNoRows)
-log.Error("db error", map[string]any{"err": err})
-// Output includes: "err":"query failed: no rows", "err_type":"*fmt.wrapError", "err_chain":["query failed: no rows","no rows"]
-```
-
-## Hooks
-
-Hooks run after each entry is written. They receive the level, message, and merged fields. Each hook is panic-safe.
+Hooks run after writing. They receive the level, message, and fields. Each hook is panic-safe.
 
 ```go
 alertHook := func(level logger.Level, msg string, fields map[string]any) {
@@ -442,140 +288,43 @@ log := logger.New(os.Stdout, logger.INFO,
 )
 ```
 
-## Runtime Level Changes
+## Filtering & Redaction
+
+Redact sensitive fields by name. Applies recursively to nested maps.
 
 ```go
-log.SetLevel(logger.DEBUG)   // enable debug logging
-log.GetLevel()               // read current level
-```
-
-Level changes are atomic and propagate to all child loggers.
-
-## Graceful Shutdown
-
-Always call `Sync()` before application exit:
-
-```go
-log := logger.New(asyncWriter, logger.INFO)
-defer log.Sync()
-```
-
-`Sync()` flushes the async buffer, syncs fan-out writers, and prevents further entries from being accepted. Known benign errors from non-file descriptors (e.g., piped stdout) are silently ignored.
-
-For deadline-aware flushing:
-
-```go
-err := log.SyncWithTimeout(5 * time.Second)
-```
-
-## Context-Based Logger Passing
-
-Store and retrieve a logger from `context.Context`:
-
-```go
-// In middleware
-ctx := logger.WithLogger(r.Context(), reqLogger)
-
-// In handlers
-log := logger.FromContext(ctx)
-log.Info("handled", nil)
-```
-
-`FromContext` falls back to `Default()` if no logger is in the context.
-
-## Global Default Logger
-
-```go
-logger.SetDefault(myLogger)
-
-log := logger.Default() // returns the global default
-```
-
-If no default is set, `Default()` returns a logger writing JSON to stderr at INFO level. `SetDefault()` also syncs with `slog.SetDefault()`.
-
-## Standard Library Bridge
-
-Bridge to code that accepts `*log.Logger`:
-
-```go
-stdLog := log.StdLogger(logger.WARNING)
-httpServer.ErrorLog = stdLog
-```
-
-## Interface for Dependency Injection
-
-The `Interface` type allows accepting any logger implementation for DI and mocking:
-
-```go
-type OrderService struct {
-    log logger.Interface
-}
-
-func NewOrderService(log logger.Interface) *OrderService {
-    return &OrderService{log: log}
-}
-```
-
-`*Logger` satisfies `Interface` implicitly.
-
-## Cloud Provider Remapping
-
-Remap core field names for cloud logging platforms:
-
-```go
-// Google Cloud Logging
-logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.GCPKeyMap})
-// Output: {"severity":"INFO","textPayload":"...","time":"..."}
-
-// Datadog
-logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.DatadogKeyMap})
-// Output: {"status":"INFO","message":"...","time":"..."}
-
-// Elastic / ELK
-logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.ELKKeyMap})
-// Output: {"@timestamp":"...","log.level":"INFO","message":"..."}
-```
-
-Custom remapping:
-
-```go
-logger.JSONFormatter{KeyMap: map[string]string{"level": "severity", "message": "msg"}}
-```
-
-All formatters (`JSONFormatter`, `TextFormatter`, `LogfmtFormatter`) support `KeyMap`.
-
-## Environment Variables
-
-```go
-log := logger.New(os.Stdout, logger.INFO, logger.WithEnvConfig())
-```
-
-Reads `LOG_LEVEL` (trace/debug/info/warning/error/fatal) and `LOG_FORMAT` (json/text/logfmt) from environment. Case-insensitive.
-
-## Nested Field Groups
-
-```go
-log.Infow("request",
-    logger.Group("http",
-        logger.String("method", "GET"),
-        logger.Int("status", 200),
-    ),
+log := logger.New(os.Stdout, logger.INFO,
+    logger.WithRedactFields("password", "token", "secret"),
 )
-// Output: "http":{"method":"GET","status":200}
+log.Info("login", map[string]any{"user": "alice", "password": "s3cret"})
+// Output: "password":"[REDACTED]", "user":"alice"
 ```
 
-## Nop Logger
+For type-level control, implement `slog.LogValuer` on your types.
 
-A logger that discards everything. Safe to call with any method:
+Prevent log storms with sampling. ERROR and FATAL are **never** sampled.
 
 ```go
-log := logger.Nop()
+logger.WithSampler(logger.NewEveryNSampler(10))  // every 10th entry per level
+logger.WithSampler(logger.NewRateSampler(100))    // max 100/sec per level
 ```
 
-## Write Error Monitoring
+## slog & Stdlib Integration
+
+Use as a backend for Go's standard `log/slog`:
 
 ```go
-count := log.WriteErrorCount() // number of failed writes
+log := logger.New(os.Stdout, logger.DEBUG)
+slogLogger := slog.New(logger.NewSlogHandler(log))
+
+slogLogger.Info("from slog", "user", "alice", "count", 42)
+// Routed through log-it with full feature support
+```
+
+`SetDefault()` automatically syncs with `slog.SetDefault()`. Bridge to `*log.Logger` with `StdLogger()`:
+
+```go
+httpServer.ErrorLog = log.StdLogger(logger.WARNING)
 ```
 
 ## Test Helpers
@@ -596,23 +345,28 @@ func TestOrderProcessing(t *testing.T) {
 }
 ```
 
-`NewTLogger(t)` routes logs through `t.Log()` so they appear only with `-v`:
+`NewTLogger(t)` routes logs through `t.Log()` so they appear only with `-v`.
 
-```go
-log := logtest.NewTLogger(t)
-```
+## Performance
+
+Level filtering costs ~2ns with zero allocations. A full JSON entry to `io.Discard` runs ~1.9μs. Parallel throughput reaches ~1.8M entries/sec on 12 cores.
+
+See [BENCHMARKS.md](BENCHMARKS.md) for full results and stress tests.
 
 ## Testing
-
-All public API, error paths, concurrency, and feature combinations are covered. All tests pass with `-race`:
 
 ```bash
 go test -race -v -count=1 ./...
 ```
 
-A pre-flight script mirrors the full CI pipeline locally (build, vet, tests, lint, cross-compilation, benchmarks):
+A pre-flight script mirrors the full CI pipeline locally:
 
 ```bash
 ./scripts/pre-flight.sh          # full run
 ./scripts/pre-flight.sh --quick  # skip stress tests and lint
 ```
+
+## Full API Reference
+
+Complete documentation for all types, methods, and runnable examples:
+[pkg.go.dev/github.com/adamjohannes/log-it](https://pkg.go.dev/github.com/adamjohannes/log-it)
