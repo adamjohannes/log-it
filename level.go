@@ -5,6 +5,8 @@ import "strings"
 // Level represents a log severity level.
 type Level int
 
+// Log severity levels, ordered from lowest to highest.
+// Entries below the logger's configured minimum level are discarded.
 const (
 	TRACE Level = iota
 	DEBUG
@@ -14,6 +16,8 @@ const (
 	FATAL
 )
 
+// String returns the uppercase name of the level (e.g., "INFO").
+// Unknown levels return "UNKNOWN".
 func (l Level) String() string {
 	switch l {
 	case TRACE:
