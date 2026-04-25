@@ -5,6 +5,8 @@ import "time"
 // FieldType represents the type of a Field value.
 type FieldType uint8
 
+// FieldType values identify the stored type inside a Field, allowing
+// Value() to return the concrete value without a type switch on interface{}.
 const (
 	FieldTypeAny FieldType = iota
 	FieldTypeString

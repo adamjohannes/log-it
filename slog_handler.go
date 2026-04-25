@@ -23,12 +23,15 @@ func NewSlogHandler(l *Logger) *SlogHandler {
 	return &SlogHandler{logger: l}
 }
 
-// Enabled reports whether the handler handles records at the given level.
+// Enabled reports whether the logger accepts records at the given slog level
+// by mapping it to the underlying Logger's minimum level.
 func (h *SlogHandler) Enabled(_ context.Context, level slog.Level) bool {
 	return slogLevelToLevel(level) >= h.logger.GetLevel()
 }
 
-// Handle processes a slog.Record by converting it to our logger's format.
+// Handle converts a slog.Record into a map-based log entry, merging
+// pre-set attributes and record attributes, and writes it through
+// the underlying Logger. Source location is extracted from the record's PC.
 func (h *SlogHandler) Handle(ctx context.Context, record slog.Record) error {
 	fields := make(map[string]any, record.NumAttrs()+len(h.attrs))
 
@@ -64,7 +67,8 @@ func (h *SlogHandler) Handle(ctx context.Context, record slog.Record) error {
 	return nil
 }
 
-// WithAttrs returns a new handler with the given attributes pre-set.
+// WithAttrs returns a new handler that includes the given attributes
+// in every subsequent Handle call.
 func (h *SlogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	newAttrs := make([]slog.Attr, len(h.attrs)+len(attrs))
 	copy(newAttrs, h.attrs)

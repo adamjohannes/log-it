@@ -421,7 +421,10 @@ func (l *Logger) writeEntry(r *Logger, level Level, message string, fields map[s
 	}
 }
 
-// --- Structured log methods ---
+// Trace, Debug, Info, Warning, Error, and Fatal log at their respective
+// severity levels with structured fields provided as a map.
+// Entries below the logger's minimum level are discarded.
+// Fatal flushes buffered output and calls os.Exit(1).
 
 func (l *Logger) Trace(message string, fields map[string]any)   { l.internalLog(TRACE, message, fields) }
 func (l *Logger) Debug(message string, fields map[string]any)   { l.internalLog(DEBUG, message, fields) }
@@ -430,7 +433,9 @@ func (l *Logger) Warning(message string, fields map[string]any) { l.internalLog(
 func (l *Logger) Error(message string, fields map[string]any)   { l.internalLog(ERROR, message, fields) }
 func (l *Logger) Fatal(message string, fields map[string]any)   { l.internalLog(FATAL, message, fields) }
 
-// --- Formatted log methods ---
+// Tracef, Debugf, Infof, Warningf, Errorf, and Fatalf log a
+// printf-formatted message at their respective severity levels.
+// No structured fields are attached to the entry.
 
 func (l *Logger) Tracef(format string, v ...any)   { l.internalLog(TRACE, fmt.Sprintf(format, v...), nil) }
 func (l *Logger) Debugf(format string, v ...any)   { l.internalLog(DEBUG, fmt.Sprintf(format, v...), nil) }
@@ -439,7 +444,11 @@ func (l *Logger) Warningf(format string, v ...any) { l.internalLog(WARNING, fmt.
 func (l *Logger) Errorf(format string, v ...any)   { l.internalLog(ERROR, fmt.Sprintf(format, v...), nil) }
 func (l *Logger) Fatalf(format string, v ...any)   { l.internalLog(FATAL, fmt.Sprintf(format, v...), nil) }
 
-// --- Context-aware log methods ---
+// TraceContext, DebugContext, InfoContext, WarningContext, ErrorContext,
+// and FatalContext are like their non-Context counterparts but also run
+// registered context extractors. Field priority: per-call fields take
+// precedence over context-extracted fields, which take precedence over
+// persistent fields set via With().
 
 func (l *Logger) TraceContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, TRACE, message, fields) }
 func (l *Logger) DebugContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, DEBUG, message, fields) }
@@ -448,7 +457,10 @@ func (l *Logger) WarningContext(ctx context.Context, message string, fields map[
 func (l *Logger) ErrorContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, ERROR, message, fields) }
 func (l *Logger) FatalContext(ctx context.Context, message string, fields map[string]any)   { l.internalLogCtx(ctx, FATAL, message, fields) }
 
-// --- Typed field log methods (zero-allocation constructors) ---
+// Tracew, Debugw, Infow, Warningw, Errorw, and Fatalw log at their
+// respective severity levels using typed Field constructors (String, Int,
+// Bool, etc.) instead of a map. This avoids boxing primitive values into
+// interface{}, reducing heap allocations at the call site.
 
 func (l *Logger) Tracew(message string, fields ...Field)   { l.internalLog(TRACE, message, fieldsToMap(fields)) }
 func (l *Logger) Debugw(message string, fields ...Field)   { l.internalLog(DEBUG, message, fieldsToMap(fields)) }
