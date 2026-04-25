@@ -319,3 +319,83 @@ func ExampleWithStackTrace() {
 	fmt.Println("has stacktrace:", strings.Contains(output, "stacktrace"))
 	// Output: has stacktrace: true
 }
+
+func ExampleWithCaller() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithCaller(),
+	)
+
+	log.Info("with source", nil)
+
+	output := buf.String()
+	fmt.Println("has file field:", strings.Contains(output, `"file":`))
+	// Output: has file field: true
+}
+
+func ExampleWithEventID() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithEventID(),
+	)
+
+	log.Info("tracked entry", nil)
+
+	output := buf.String()
+	fmt.Println("has event_id:", strings.Contains(output, `"event_id":`))
+	// Output: has event_id: true
+}
+
+func ExampleWithHooks() {
+	var buf bytes.Buffer
+	var errorCount int
+
+	hook := func(level logger.Level, msg string, fields map[string]any) {
+		if level >= logger.ERROR {
+			errorCount++
+		}
+	}
+
+	log := logger.New(&buf, logger.INFO,
+		logger.WithHooks(hook),
+	)
+
+	log.Info("all good", nil)
+	log.Error("something failed", nil)
+	log.Error("another failure", nil)
+
+	fmt.Println("errors observed:", errorCount)
+	// Output: errors observed: 2
+}
+
+func ExampleNewEveryNSampler() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithSampler(logger.NewEveryNSampler(3)),
+	)
+
+	for i := 0; i < 9; i++ {
+		log.Info("tick", nil)
+	}
+
+	// EveryNSampler logs the 1st, 4th, 7th entry (every 3rd)
+	lines := strings.Count(strings.TrimSpace(buf.String()), "\n") + 1
+	fmt.Println("logged entries:", lines)
+	// Output: logged entries: 3
+}
+
+func ExampleJSONFormatter_keyMap() {
+	var buf bytes.Buffer
+	log := logger.New(&buf, logger.INFO,
+		logger.WithFormatter(logger.JSONFormatter{KeyMap: logger.GCPKeyMap}),
+	)
+
+	log.Info("hello", nil)
+
+	output := buf.String()
+	fmt.Println("has severity:", strings.Contains(output, `"severity":`))
+	fmt.Println("has textPayload:", strings.Contains(output, `"textPayload":`))
+	// Output:
+	// has severity: true
+	// has textPayload: true
+}
