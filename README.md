@@ -14,6 +14,8 @@ go get github.com/adamjohannes/log-it
 
 Requires Go 1.21+.
 
+Full API documentation: [pkg.go.dev/github.com/adamjohannes/log-it](https://pkg.go.dev/github.com/adamjohannes/log-it)
+
 ## Quick Start
 
 ```go
