@@ -16,37 +16,6 @@ import (
 	"time"
 )
 
-// Level represents a log severity level.
-type Level int
-
-const (
-	TRACE Level = iota
-	DEBUG
-	INFO
-	WARNING
-	ERROR
-	FATAL
-)
-
-func (l Level) String() string {
-	switch l {
-	case TRACE:
-		return "TRACE"
-	case DEBUG:
-		return "DEBUG"
-	case INFO:
-		return "INFO"
-	case WARNING:
-		return "WARNING"
-	case ERROR:
-		return "ERROR"
-	case FATAL:
-		return "FATAL"
-	default:
-		return "UNKNOWN"
-	}
-}
-
 // ContextExtractor extracts structured fields from a context.Context.
 // Register extractors via WithContextExtractor to automatically inject
 // fields like trace_id or request_id into every log entry.
